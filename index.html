@@ -66,6 +66,10 @@
     <button id="clues">Name clues</button>
     <button id="install" hidden>Install app</button>
   </div>
+  <div class="row" id="gorow">
+    <input id="goname" placeholder="Go to: town, address or 45.76, 4.83" enterkeyhint="go">
+    <button id="go">Go</button>
+  </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
     <summary>Places &amp; map options</summary>
@@ -75,10 +79,6 @@
       <button data-ll="50.4472,2.0556">Fressin</button>
       <button data-ll="45.7578,4.8320">Lyon</button>
       <select id="base" aria-label="Base map"></select>
-    </div>
-    <div class="row" id="gorow">
-      <input id="goname" placeholder="Go to a town or village in France">
-      <button id="go">Go</button>
     </div>
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
@@ -692,14 +692,23 @@ map.on('moveend', () => { clearTimeout(cluesTimer); cluesTimer = setTimeout(load
 /* ---------- Go to any French commune (official geo.api.gouv.fr directory) ---------- */
 async function goTo() {
   const name = $('goname').value.trim(); if (!name) return;
+  const jump = (lat, lng, zoom, label) => { follow = false; map.setView([lat, lng], zoom); $('status').textContent = label; $('goname').blur(); };
+  const m = /^\s*(-?\d+(?:[.,]\d+)?)\s*[,; ]\s*(-?\d+(?:[.,]\d+)?)\s*$/.exec(name);   // "lat, lon"
+  if (m) {
+    const lat = parseFloat(m[1].replace(',', '.')), lng = parseFloat(m[2].replace(',', '.'));
+    if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180) return jump(lat, lng, 16, 'Coordinates ' + lat.toFixed(5) + ', ' + lng.toFixed(5));
+  }
   $('status').textContent = 'Searching…';
-  try {
+  try {                                             // addresses, hamlets, lieux-dits (OpenStreetMap search)
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=fr&q=' + encodeURIComponent(name));
+    const d = r.ok ? await r.json() : [];
+    if (d.length) return jump(+d[0].lat, +d[0].lon, 15, String(d[0].display_name || name).split(',').slice(0, 3).join(','));
+  } catch (e) {}
+  try {                                             // fallback: official list of communes
     const r = await fetch('https://geo.api.gouv.fr/communes?nom=' + encodeURIComponent(name) + '&fields=nom,centre,codeDepartement&boost=population&limit=1');
     const d = r.ok ? await r.json() : [];
-    if (!d.length || !d[0].centre) { $('status').textContent = 'No town found with that name.'; return; }
-    const c = d[0].centre.coordinates;
-    follow = false; map.setView([c[1], c[0]], 13);
-    $('status').textContent = d[0].nom + ' (' + d[0].codeDepartement + ')';
+    if (d.length && d[0].centre) { const c = d[0].centre.coordinates; return jump(c[1], c[0], 13, d[0].nom + ' (' + d[0].codeDepartement + ')'); }
+    $('status').textContent = 'Nothing found for "' + name + '".';
   } catch (e) { $('status').textContent = 'Search failed – check the connection.'; }
 }
 $('go').onclick = goTo;
