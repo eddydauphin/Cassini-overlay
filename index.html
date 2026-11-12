@@ -22,7 +22,24 @@
   button, select { font: inherit; padding: 6px 10px; border: 1px solid #b9a984; border-radius: 6px; background: #fff; color: inherit; }
   #status { font-size: 12px; color: #7a6a45; }
   #keyrow input { flex: 1; min-width: 140px; font: inherit; padding: 6px; border: 1px solid #b9a984; border-radius: 6px; }
-  details summary { cursor: pointer; font-size: 12px; color: #7a6a45; }
+  details summary { cursor: pointer; font-size: 12px; color: #7a6a45; padding: 4px 0; }
+  #trip.rec { background: #c0392b; color: #fff; border-color: #c0392b; }
+  .sheet { position: absolute; inset: 0; z-index: 2000; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
+  .sheet[hidden] { display: none; }
+  .sheet > div { background: #faf6eb; color: #3b3222; width: 100%; max-width: 480px; max-height: 85%; overflow: auto;
+    border-radius: 14px 14px 0 0; padding: 14px; box-sizing: border-box; font-size: 14px; }
+  .sheet h2 { font-size: 16px; margin: 0 0 8px; }
+  .sheet h3 { font-size: 13px; margin: 14px 0 4px; color: #7a6a45; text-transform: uppercase; letter-spacing: .04em; }
+  .sheet input[type=text] { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border: 1px solid #b9a984; border-radius: 6px; }
+  .sheet .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  #fprev { max-width: 100%; max-height: 220px; border-radius: 8px; display: block; margin: 8px 0; }
+  .item { display: flex; gap: 8px; align-items: center; padding: 8px 0; border-top: 1px solid #e2d6b5; }
+  .item .grow { flex: 1; min-width: 0; }
+  .item small { color: #7a6a45; display: block; }
+  .item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
+  .primary { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
+  .findpin { width: 18px; height: 18px; border-radius: 50%; background: #e0a800; border: 3px solid #fff; box-shadow: 0 0 0 1px #6b5200, 0 1px 4px rgba(0,0,0,.5); }
+  .pop img { width: 200px; max-width: 100%; border-radius: 6px; display: block; margin-bottom: 6px; }
 </style>
 </head>
 <body>
@@ -34,22 +51,55 @@
     <span>Cassini</span>
   </div>
   <div class="row">
-    <button data-ll="50.3422,1.9978">Caumont</button>
-    <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
-    <button data-ll="50.4472,2.0556">Fressin</button>
     <button id="locate">My position</button>
+    <button id="trip">Start trip</button>
+    <button id="find">Add find</button>
+    <button id="hist">History</button>
     <button id="install" hidden>Install app</button>
-    <select id="base" aria-label="Base map"></select>
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Google Maps base (needs an API key)</summary>
+    <summary>Places &amp; map options</summary>
+    <div class="row">
+      <button data-ll="50.3422,1.9978">Caumont</button>
+      <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
+      <button data-ll="50.4472,2.0556">Fressin</button>
+      <select id="base" aria-label="Base map"></select>
+    </div>
     <div class="row" id="keyrow">
-      <input id="gkey" placeholder="Google Maps JavaScript API key">
+      <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
     </div>
   </details>
 </div>
+
+<!-- New find -->
+<div class="sheet" id="findSheet" hidden><div>
+  <h2>New find</h2>
+  <div id="fwhere"></div>
+  <img id="fprev" hidden alt="Photo of the find">
+  <div class="row">
+    <button id="fphoto">Take / choose photo</button>
+    <input id="photo" type="file" accept="image/*" hidden>
+  </div>
+  <input id="fnote" type="text" placeholder="What is it? (coin, button, buckle…)">
+  <div class="row">
+    <button id="fsave" class="primary">Save find</button>
+    <button id="fcancel">Cancel</button>
+  </div>
+</div></div>
+
+<!-- History -->
+<div class="sheet" id="histSheet" hidden><div>
+  <div class="row" style="justify-content:space-between;margin-top:0">
+    <h2 style="margin:0">Trips &amp; finds</h2>
+    <button id="hclose">Close</button>
+  </div>
+  <h3>Trips</h3><div id="tripList"></div>
+  <h3>Finds</h3><div id="findList"></div>
+  <div class="row"><button id="export">Export backup file</button></div>
+  <small>Everything is stored on this phone only. Export a backup from time to time.</small>
+</div></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
@@ -154,6 +204,201 @@ map.on('locationerror', () => {
   tracking = false; map.stopLocate();
   $('status').textContent = 'Position unavailable – allow location for this app in Chrome and switch GPS on.';
 });
+
+/* ---------- Field log: trips and finds, stored on the phone (IndexedDB) ---------- */
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtDate = t => new Date(t).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+const fmtKm = m => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(2) + ' km';
+
+const dbReady = new Promise((ok, ko) => {
+  const r = indexedDB.open('cassini-field', 1);
+  r.onupgradeneeded = () => {
+    r.result.createObjectStore('trips', { keyPath: 'id' });
+    r.result.createObjectStore('finds', { keyPath: 'id' });
+  };
+  r.onsuccess = () => ok(r.result);
+  r.onerror = () => ko(r.error);
+});
+const idb = (name, mode, fn) => dbReady.then(d => new Promise((ok, ko) => {
+  const tx = d.transaction(name, mode), rq = fn(tx.objectStore(name));
+  tx.oncomplete = () => ok(rq && rq.result);
+  tx.onerror = tx.onabort = () => ko(tx.error);
+}));
+const dbPut = (s, v) => idb(s, 'readwrite', o => o.put(v));
+const dbAll = s => idb(s, 'readonly', o => o.getAll());
+const dbDel = (s, id) => idb(s, 'readwrite', o => o.delete(id));
+const dbFail = () => { $('status').textContent = 'Could not save on this phone – storage unavailable or full.'; };
+
+const tripsLayer = L.layerGroup().addTo(map), findsLayer = L.layerGroup().addTo(map);
+let trips = [], finds = [], cur = null, curLine = null, wake = null, unsaved = 0;
+
+function drawAll() {
+  tripsLayer.clearLayers(); findsLayer.clearLayers();
+  trips.forEach(t => {
+    if (cur && t.id === cur.id) return;
+    if (t.points.length > 1) L.polyline(t.points.map(p => [p[0], p[1]]), { color: '#7b3f00', weight: 3, opacity: .75 }).addTo(tripsLayer);
+  });
+  finds.forEach(f => {
+    const m = L.marker([f.lat, f.lng], { icon: L.divIcon({ className: '', html: '<div class="findpin"></div>', iconSize: [24, 24], iconAnchor: [12, 12] }) }).addTo(findsLayer);
+    m.bindPopup(() => {
+      const d = document.createElement('div'); d.className = 'pop';
+      d.innerHTML = (f.photo ? '<img src="' + f.photo + '" alt="">' : '') +
+        '<b>' + esc(f.note || 'Find') + '</b><br>' + fmtDate(f.date) + '<br><small>' + f.lat.toFixed(5) + ', ' + f.lng.toFixed(5) + '</small>';
+      return d;
+    });
+    f._marker = m;
+  });
+}
+async function loadLog() {
+  try {
+    trips = await dbAll('trips'); finds = await dbAll('finds');
+    // A trip left open (app closed while recording) is closed at its last recorded point.
+    for (const t of trips) if (!t.end) { t.end = t.points.length ? t.points[t.points.length - 1][2] : t.start; await dbPut('trips', t); }
+    drawAll();
+  } catch (e) { dbFail(); }
+}
+loadLog();
+
+/* ----- Trip recording ----- */
+async function keepAwake() {
+  try { if ('wakeLock' in navigator && cur) wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') keepAwake();
+  else if (cur) dbPut('trips', cur).catch(dbFail);
+});
+function tripLabel() {
+  $('trip').textContent = cur ? 'Stop trip · ' + fmtKm(cur.dist) : 'Start trip';
+  $('trip').classList.toggle('rec', !!cur);
+}
+$('trip').onclick = async () => {
+  if (!cur) {
+    cur = { id: Date.now(), start: Date.now(), end: null, points: [], dist: 0 };
+    trips.push(cur);
+    curLine = L.polyline([], { color: '#c0392b', weight: 4 }).addTo(map);
+    dbPut('trips', cur).catch(dbFail);
+    keepAwake();
+    $('locate').click();               // make sure GPS is on and the map follows
+    $('status').textContent = 'Recording trip – keep the app open and the screen on.';
+  } else {
+    cur.end = Date.now();
+    const done = cur; cur = null;
+    if (wake) { try { wake.release(); } catch (e) {} wake = null; }
+    map.removeLayer(curLine); curLine = null;
+    try { await dbPut('trips', done); } catch (e) { dbFail(); }
+    drawAll();
+    $('status').textContent = 'Trip saved: ' + fmtKm(done.dist) + ', ' + finds.filter(f => f.tripId === done.id).length + ' find(s).';
+  }
+  tripLabel();
+};
+map.on('locationfound', e => {
+  if (!cur || e.accuracy > 40) return;             // ignore poor fixes
+  const last = cur.points[cur.points.length - 1];
+  const step = last ? map.distance([last[0], last[1]], e.latlng) : Infinity;
+  if (last && step < 4) return;                    // ignore jitter while standing still
+  if (last) cur.dist += step;
+  cur.points.push([e.latlng.lat, e.latlng.lng, Date.now()]);
+  curLine.addLatLng(e.latlng);
+  tripLabel();
+  if (++unsaved >= 5) { unsaved = 0; dbPut('trips', cur).catch(dbFail); }
+});
+
+/* ----- Finds ----- */
+let draft = null;
+$('find').onclick = () => {
+  const gps = me ? me.getLatLng() : null, c = gps || map.getCenter();
+  draft = { lat: c.lat, lng: c.lng, photo: null };
+  $('fwhere').textContent = gps
+    ? 'Location: your GPS position (' + c.lat.toFixed(5) + ', ' + c.lng.toFixed(5) + ')'
+    : 'No GPS position yet – the find will be placed at the centre of the map.';
+  $('fprev').hidden = true; $('fnote').value = ''; $('photo').value = '';
+  $('findSheet').hidden = false;
+};
+$('fphoto').onclick = () => $('photo').click();
+$('photo').onchange = e => {
+  const file = e.target.files[0]; if (!file) return;
+  const url = URL.createObjectURL(file), img = new Image();
+  img.onload = () => {                             // shrink to keep storage small
+    const k = Math.min(1, 1280 / Math.max(img.width, img.height));
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(img.width * k); cv.height = Math.round(img.height * k);
+    cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+    draft.photo = cv.toDataURL('image/jpeg', .8);
+    $('fprev').src = draft.photo; $('fprev').hidden = false;
+    URL.revokeObjectURL(url);
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); $('fwhere').textContent = 'That photo could not be read – try again.'; };
+  img.src = url;
+};
+$('fcancel').onclick = () => { $('findSheet').hidden = true; draft = null; };
+$('fsave').onclick = async () => {
+  const f = { id: Date.now(), date: Date.now(), tripId: cur ? cur.id : null,
+              lat: draft.lat, lng: draft.lng, note: $('fnote').value.trim(), photo: draft.photo };
+  try {
+    await dbPut('finds', f);
+    finds.push(f); drawAll();
+    $('status').textContent = 'Find saved.';
+  } catch (e) { dbFail(); }
+  $('findSheet').hidden = true; draft = null;
+};
+
+/* ----- History ----- */
+function armDelete(btn, fn) {                      // two taps to delete
+  btn.onclick = () => {
+    if (btn.dataset.armed) return fn();
+    btn.dataset.armed = 1; btn.textContent = 'Confirm';
+    setTimeout(() => { delete btn.dataset.armed; btn.textContent = 'Delete'; }, 3000);
+  };
+}
+function renderHistory() {
+  const tl = $('tripList'), fl = $('findList'); tl.innerHTML = ''; fl.innerHTML = '';
+  const ts = trips.slice().sort((a, b) => b.start - a.start);
+  if (!ts.length) tl.innerHTML = '<small>No trips yet. Tap "Start trip" when you begin detecting.</small>';
+  ts.forEach(t => {
+    const n = finds.filter(f => f.tripId === t.id).length;
+    const mins = Math.round(((t.end || Date.now()) - t.start) / 60000);
+    const d = document.createElement('div'); d.className = 'item';
+    d.innerHTML = '<div class="grow"><b>' + fmtDate(t.start) + '</b>' + (t.end ? '' : ' (recording)') +
+      '<small>' + fmtKm(t.dist) + ' · ' + mins + ' min · ' + n + ' find(s)</small></div>' +
+      '<button class="show">Show</button>' + (t.end ? '<button class="del">Delete</button>' : '');
+    d.querySelector('.show').onclick = () => {
+      $('histSheet').hidden = true; follow = false;
+      if (t.points.length) map.fitBounds(L.latLngBounds(t.points.map(p => [p[0], p[1]])).pad(.2), { maxZoom: 17 });
+    };
+    if (t.end) armDelete(d.querySelector('.del'), async () => {
+      try { await dbDel('trips', t.id); trips = trips.filter(x => x.id !== t.id); drawAll(); renderHistory(); } catch (e) { dbFail(); }
+    });
+    tl.appendChild(d);
+  });
+  const fs = finds.slice().sort((a, b) => b.date - a.date);
+  if (!fs.length) fl.innerHTML = '<small>No finds yet. Tap "Add find" where you dig something up.</small>';
+  fs.forEach(f => {
+    const d = document.createElement('div'); d.className = 'item';
+    d.innerHTML = (f.photo ? '<img src="' + f.photo + '" alt="">' : '') +
+      '<div class="grow"><b>' + esc(f.note || 'Find') + '</b><small>' + fmtDate(f.date) + '</small></div>' +
+      '<button class="show">Show</button><button class="del">Delete</button>';
+    d.querySelector('.show').onclick = () => {
+      $('histSheet').hidden = true; follow = false;
+      map.setView([f.lat, f.lng], Math.max(map.getZoom(), 16));
+      if (f._marker) f._marker.openPopup();
+    };
+    armDelete(d.querySelector('.del'), async () => {
+      try { await dbDel('finds', f.id); finds = finds.filter(x => x.id !== f.id); drawAll(); renderHistory(); } catch (e) { dbFail(); }
+    });
+    fl.appendChild(d);
+  });
+}
+$('hist').onclick = () => { renderHistory(); $('histSheet').hidden = false; };
+$('hclose').onclick = () => { $('histSheet').hidden = true; };
+$('export').onclick = () => {
+  const data = { exported: new Date().toISOString(), trips,
+                 finds: finds.map(f => ({ id: f.id, date: f.date, tripId: f.tripId, lat: f.lat, lng: f.lng, note: f.note, photo: f.photo })) };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  a.download = 'cassini-finds-' + new Date().toISOString().slice(0, 10) + '.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+};
 
 /* ---------- Install button (Chrome / Android) ---------- */
 let installEvt = null;
