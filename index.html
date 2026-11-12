@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#8a6d3b">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Cassini overlay – Pas-de-Calais</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #panel {
+    position: absolute; left: 10px; right: 10px; bottom: 18px; z-index: 1000;
+    max-width: 440px; margin: 0 auto; padding: 10px 12px;
+    background: rgba(250, 246, 235, .95); border: 1px solid #b9a984; border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.3); font-size: 14px; color: #3b3222;
+  }
+  #panel .row { display: flex; align-items: center; gap: 8px; margin: 4px 0; flex-wrap: wrap; }
+  #opacity { flex: 1; min-width: 120px; }
+  button, select { font: inherit; padding: 6px 10px; border: 1px solid #b9a984; border-radius: 6px; background: #fff; color: inherit; }
+  #status { font-size: 12px; color: #7a6a45; }
+  #keyrow input { flex: 1; min-width: 140px; font: inherit; padding: 6px; border: 1px solid #b9a984; border-radius: 6px; }
+  details summary { cursor: pointer; font-size: 12px; color: #7a6a45; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <div class="row">
+    <span>Today</span>
+    <input id="opacity" type="range" min="0" max="100" value="65" aria-label="Cassini opacity">
+    <span>Cassini</span>
+  </div>
+  <div class="row">
+    <button data-ll="50.3422,1.9978">Caumont</button>
+    <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
+    <button data-ll="50.4472,2.0556">Fressin</button>
+    <button id="locate">My position</button>
+    <select id="base" aria-label="Base map"></select>
+  </div>
+  <div id="status">Loading Cassini layer…</div>
+  <details>
+    <summary>Google Maps base (needs an API key)</summary>
+    <div class="row" id="keyrow">
+      <input id="gkey" placeholder="Google Maps JavaScript API key">
+      <button id="gload">Use</button>
+    </div>
+  </details>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+const $ = id => document.getElementById(id);
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+};
+
+const map = L.map('map', { zoomControl: false }).setView([50.39, 2.03], 12);
+L.control.zoom({ position: 'topright' }).addTo(map);
+L.control.scale({ imperial: false }).addTo(map);
+
+/* ---------- Base maps ---------- */
+const geopf = (layer, format) =>
+  'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&STYLE=normal&TILEMATRIXSET=PM' +
+  '&LAYER=' + layer + '&FORMAT=' + format + '&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+
+const bases = {
+  'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '© OpenStreetMap contributors' }),
+  'IGN aerial photo': L.tileLayer(geopf('ORTHOIMAGERY.ORTHOPHOTOS', 'image/jpeg'),
+    { maxZoom: 19, attribution: '© IGN' }),
+  'IGN plan': L.tileLayer(geopf('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2', 'image/png'),
+    { maxZoom: 19, attribution: '© IGN' })
+};
+let currentBase = null;
+function refreshBaseList(selected) {
+  $('base').innerHTML = Object.keys(bases).map(n => '<option>' + n + '</option>').join('');
+  if (selected) $('base').value = selected;
+}
+function setBase(name) {
+  if (currentBase) map.removeLayer(currentBase);
+  currentBase = bases[name].addTo(map);
+  if (currentBase.bringToBack) currentBase.bringToBack();
+  $('base').value = name;
+}
+refreshBaseList();
+setBase('OpenStreetMap');
+$('base').onchange = e => setBase(e.target.value);
+
+/* ---------- Cassini overlay (IGN Géoplateforme) ---------- */
+// The technical layer name has changed over the years, so probe the known variants.
+const candidates = [
+  ['BNF-IGNF_GEOGRAPHICALGRIDSYSTEMS.CASSINI', 'image/png'],
+  ['BNF-IGNF_GEOGRAPHICALGRIDSYSTEMS.CASSINI', 'image/jpeg'],
+  ['GEOGRAPHICALGRIDSYSTEMS.CASSINI', 'image/png'],
+  ['GEOGRAPHICALGRIDSYSTEMS.CASSINI', 'image/jpeg']
+];
+let cassini = null;
+function probe(i) {
+  if (i >= candidates.length) {
+    $('status').textContent = 'Cassini layer not found on data.geopf.fr – the layer name needs updating.';
+    return;
+  }
+  const [layer, format] = candidates[i];
+  // Tile covering the Hesdin area at zoom 12
+  const url = geopf(layer, format).replace('{z}', 12).replace('{x}', 2071).replace('{y}', 1382);
+  const img = new Image();
+  img.onload = () => {
+    cassini = L.tileLayer(geopf(layer, format), {
+      maxNativeZoom: 15, maxZoom: 19, opacity: $('opacity').value / 100,
+      attribution: 'Carte de Cassini © IGN / BnF'
+    }).addTo(map);
+    $('status').textContent = 'Cassini map (18th c.) over today\'s map – drag the slider to compare.';
+  };
+  img.onerror = () => probe(i + 1);
+  img.src = url;
+}
+probe(0);
+$('opacity').oninput = e => { if (cassini) cassini.setOpacity(e.target.value / 100); };
+
+/* ---------- Navigation ---------- */
+document.querySelectorAll('button[data-ll]').forEach(b => {
+  b.onclick = () => map.setView(b.dataset.ll.split(',').map(Number), 14);
+});
+// Live position: blue dot + accuracy circle, updated as you move.
+let me = null, acc = null, follow = false, tracking = false;
+$('locate').onclick = () => {
+  follow = true;                       // re-centre on me; dragging the map stops following
+  if (!tracking) {
+    tracking = true;
+    map.locate({ watch: true, enableHighAccuracy: true, maximumAge: 5000 });
+    $('status').textContent = 'Looking for your position…';
+  } else if (me) map.setView(me.getLatLng(), Math.max(map.getZoom(), 15));
+};
+map.on('dragstart', () => { follow = false; });
+map.on('locationfound', e => {
+  if (!me) {
+    acc = L.circle(e.latlng, { radius: e.accuracy, color: '#1a73e8', weight: 1, fillOpacity: .12 }).addTo(map);
+    me = L.circleMarker(e.latlng, { radius: 8, color: '#fff', weight: 3, fillColor: '#1a73e8', fillOpacity: 1 }).addTo(map);
+    map.setView(e.latlng, Math.max(map.getZoom(), 15));
+  } else {
+    me.setLatLng(e.latlng); acc.setLatLng(e.latlng).setRadius(e.accuracy);
+    if (follow) map.panTo(e.latlng);
+  }
+  me.bringToFront();
+  $('status').textContent = 'Your position: blue dot (± ' + Math.round(e.accuracy) + ' m).';
+});
+map.on('locationerror', () => {
+  tracking = false; map.stopLocate();
+  $('status').textContent = 'Position unavailable – allow location for this app in Chrome and switch GPS on.';
+});
+
+/* ---------- Optional Google Maps base ---------- */
+function loadScript(src) {
+  return new Promise((ok, ko) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = ok; s.onerror = ko; document.head.appendChild(s);
+  });
+}
+async function enableGoogle(key) {
+  try {
+    await new Promise((ok, ko) => {
+      window.__gmapsReady = ok;
+      loadScript('https://maps.googleapis.com/maps/api/js?key=' + encodeURIComponent(key) +
+                 '&callback=__gmapsReady&loading=async').catch(ko);
+    });
+    await loadScript('https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.1/dist/Leaflet.GoogleMutant.js');
+    bases['Google Maps'] = L.gridLayer.googleMutant({ type: 'roadmap', maxZoom: 19 });
+    bases['Google satellite'] = L.gridLayer.googleMutant({ type: 'hybrid', maxZoom: 19 });
+    refreshBaseList();
+    setBase('Google Maps');
+    if (cassini) cassini.bringToFront();
+    store.set('gkey', key);
+  } catch (e) {
+    $('status').textContent = 'Could not load Google Maps – check the API key.';
+  }
+}
+$('gload').onclick = () => { const k = $('gkey').value.trim(); if (k) enableGoogle(k); };
+const saved = store.get('gkey');
+if (saved) { $('gkey').value = saved; enableGoogle(saved); }
+</script>
+</body>
+</html>
