@@ -39,7 +39,7 @@
   .item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
   .primary { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
   .findpin { width: 18px; height: 18px; border-radius: 50%; background: #e0a800; border: 3px solid #fff; box-shadow: 0 0 0 1px #6b5200, 0 1px 4px rgba(0,0,0,.5); }
-  #clues.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
+  #sat.on, #clues.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
   .clue { white-space: nowrap; font: 600 11px system-ui, sans-serif; color: #111; background: rgba(255,255,255,.92);
     border: 2px solid #555; border-radius: 10px; padding: 1px 6px; transform: translate(-50%, -50%); display: inline-block; }
   #sites.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
@@ -64,6 +64,7 @@
     <button id="hist">History</button>
     <button id="sites">Historic sites</button>
     <button id="clues">Name clues</button>
+    <button id="sat">Satellite</button>
     <button id="install" hidden>Install app</button>
   </div>
   <div class="row" id="gorow">
@@ -150,7 +151,7 @@ const geopf = (layer, format) =>
 const bases = {
   'OpenStreetMap': L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
     { maxZoom: 19, attribution: '© OpenStreetMap contributors' }),
-  'IGN aerial photo': L.tileLayer(geopf('ORTHOIMAGERY.ORTHOPHOTOS', 'image/jpeg'),
+  'Satellite': L.tileLayer(geopf('ORTHOIMAGERY.ORTHOPHOTOS', 'image/jpeg'),
     { maxZoom: 19, attribution: '© IGN' }),
   'IGN plan': L.tileLayer(geopf('GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2', 'image/png'),
     { maxZoom: 19, attribution: '© IGN' })
@@ -165,7 +166,14 @@ function setBase(name) {
   currentBase = bases[name].addTo(map);
   if (currentBase.bringToBack) currentBase.bringToBack();
   $('base').value = name;
+  $('sat').classList.toggle('on', name === 'Satellite');
 }
+let prevBase = 'OpenStreetMap';
+$('sat').onclick = () => {
+  if ($('base').value === 'Satellite') return setBase(prevBase);
+  prevBase = $('base').value; setBase('Satellite');
+  if (cassini && +$('opacity').value > 40) $('status').textContent = 'Satellite on – slide towards "Today" to see it through the Cassini map.';
+};
 refreshBaseList();
 setBase('OpenStreetMap');
 $('base').onchange = e => setBase(e.target.value);
