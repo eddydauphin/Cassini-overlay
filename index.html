@@ -72,6 +72,7 @@
       <select id="base" aria-label="Base map"></select>
     </div>
     <div id="legend"></div>
+    <small>Missing a site? Long-press the map at its location to add it yourself.</small>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -92,6 +93,17 @@
   <div class="row">
     <button id="fsave" class="primary">Save find</button>
     <button id="fcancel">Cancel</button>
+  </div>
+</div></div>
+
+<!-- My own place -->
+<div class="sheet" id="placeSheet" hidden><div>
+  <h2>Add a place here</h2>
+  <input id="pname" type="text" placeholder="Name (e.g. old castle of Caumont)">
+  <div class="row"><select id="pcat" aria-label="Type of place"></select></div>
+  <div class="row">
+    <button id="psave" class="primary">Save place</button>
+    <button id="pcancel">Cancel</button>
   </div>
 </div></div>
 
@@ -217,10 +229,10 @@ const fmtDate = t => new Date(t).toLocaleString([], { dateStyle: 'medium', timeS
 const fmtKm = m => m < 1000 ? Math.round(m) + ' m' : (m / 1000).toFixed(2) + ' km';
 
 const dbReady = new Promise((ok, ko) => {
-  const r = indexedDB.open('cassini-field', 1);
+  const r = indexedDB.open('cassini-field', 2);
   r.onupgradeneeded = () => {
-    r.result.createObjectStore('trips', { keyPath: 'id' });
-    r.result.createObjectStore('finds', { keyPath: 'id' });
+    for (const s of ['trips', 'finds', 'places'])
+      if (!r.result.objectStoreNames.contains(s)) r.result.createObjectStore(s, { keyPath: 'id' });
   };
   r.onsuccess = () => ok(r.result);
   r.onerror = () => ko(r.error);
@@ -397,7 +409,7 @@ function renderHistory() {
 $('hist').onclick = () => { renderHistory(); $('histSheet').hidden = false; };
 $('hclose').onclick = () => { $('histSheet').hidden = true; };
 $('export').onclick = () => {
-  const data = { exported: new Date().toISOString(), trips,
+  const data = { exported: new Date().toISOString(), trips, places: myPlaces,
                  finds: finds.map(f => ({ id: f.id, date: f.date, tripId: f.tripId, lat: f.lat, lng: f.lng, note: f.note, photo: f.photo })) };
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
@@ -460,15 +472,16 @@ async function loadSites() {
     'nwr["abandoned:military"](' + box + ');' +
     ');out center tags 600;';
   sitesBusy = true; $('status').textContent = 'Loading historic sites…';
-  const [places, battles] = await Promise.all([fetchPlaces(query), fetchBattles(q)]);
+  const [places, battles, wiki] = await Promise.all([fetchPlaces(query), fetchBattles(q), fetchWiki()]);
   sitesBusy = false;
-  if (!places && !battles) { $('status').textContent = 'Historic sites could not be loaded – check the connection and try again.'; return; }
+  if (!places && !battles && !wiki) { $('status').textContent = 'Historic sites could not be loaded – check the connection and try again.'; return; }
   (places || []).forEach(addSite);
   (battles || []).forEach(addBattle);
-  if (places && battles) sitesLoaded = q;        // retry next time if one source failed
+  (wiki || []).forEach(addWiki);              // last, so it only fills gaps left by the other two
+  if (places && battles && wiki) sitesLoaded = map.getBounds();        // retry next time if one source failed
   const n = sitesLayer.getLayers().length;
   $('status').textContent = n + ' known historic site(s) loaded – tap a dot for details.' +
-    (!places ? ' (Castles/bunkers source unavailable.)' : '') + (!battles ? ' (Battles source unavailable.)' : '') +
+    (!places ? ' (OpenStreetMap source failed.)' : '') + (!battles ? ' (Wikidata source failed.)' : '') + (!wiki ? ' (Wikipedia source failed.)' : '') +
     ((places || []).length >= 600 ? ' Zoom in to see them all.' : '');
 }
 async function fetchPlaces(query) {              // OpenStreetMap: castles, manors, forts, bunkers, trenches, ruins…
@@ -499,6 +512,69 @@ async function fetchBattles(q) {                 // Wikidata: battles and sieges
     return d.results && Array.isArray(d.results.bindings) ? d.results.bindings : null;
   } catch (e) { return null; }
 }
+// French Wikipedia articles located near the centre of the map whose title names a battle, castle, camp, fort…
+const WIKI_RULES = [
+  ['battle', /bataille|si[èe]ge d|combat d|offensive/i],
+  ['castle', /ch[âa]teau|manoir|motte|donjon|seigneurie/i],
+  ['milit',  /\bcamp\b|\bfort\b|forteresse|citadelle|blockhaus|bunker|\bV[12]\b|tranch[ée]e|base de lancement|a[ée]rodrome|batterie|ligne /i],
+  ['arch',   /oppidum|tumulus|gallo-romain|villa romaine|site arch[ée]ologique|voie romaine|n[ée]cropole/i],
+  ['other',  /abbaye|prieur[ée]|commanderie|rempart|ruines|chartreuse/i]
+];
+async function fetchWiki() {
+  const c = map.getCenter();
+  try {
+    const r = await fetch('https://fr.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=' + c.lat.toFixed(4) + '%7C' + c.lng.toFixed(4) +
+                          '&gsradius=10000&gslimit=500&format=json&origin=*');
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d.query && Array.isArray(d.query.geosearch) ? d.query.geosearch : null;
+  } catch (e) { return null; }
+}
+function addWiki(a) {
+  const rule = WIKI_RULES.find(r => r[1].test(a.title || '')); if (!rule) return;
+  const key = 'wiki' + a.pageid; if (siteSeen.has(key)) return;
+  // skip if a dot of another source already sits within ~150 m with the same category colour
+  const cat = CATS[rule[0]], here = L.latLng(a.lat, a.lon);
+  if (sitesLayer.getLayers().some(l => l.options.fillColor === cat.color && map.distance(l.getLatLng(), here) < 150)) return;
+  siteSeen.add(key);
+  L.circleMarker(here, { radius: rule[0] === 'battle' ? 8 : 7, color: '#fff', weight: 2, fillColor: cat.color, fillOpacity: .95 })
+    .bindPopup('<div class="pop"><b>' + esc(a.title) + '</b><br>' + esc(cat.label) +
+      '<br><a href="https://fr.wikipedia.org/?curid=' + encodeURIComponent(a.pageid) + '" target="_blank" rel="noopener">Wikipedia</a></div>')
+    .addTo(sitesLayer);
+}
+
+/* ----- My own places (long-press the map) ----- */
+const myLayer = L.layerGroup().addTo(map);
+let myPlaces = [], placeAt = null;
+$('pcat').innerHTML = Object.keys(CATS).map(k => '<option value="' + k + '">' + CATS[k].label + '</option>').join('');
+function drawPlaces() {
+  myLayer.clearLayers();
+  myPlaces.forEach(pl => {
+    const cat = CATS[pl.cat] || CATS.other;
+    L.circleMarker([pl.lat, pl.lng], { radius: 9, color: '#111', weight: 2, dashArray: '3 3', fillColor: cat.color, fillOpacity: .95 })
+      .bindPopup(() => {
+        const d = document.createElement('div'); d.className = 'pop';
+        d.innerHTML = '<b>' + esc(pl.name || 'My place') + '</b><br>' + esc(cat.label) + '<br><small>Added by you</small><br><button>Delete</button>';
+        armDelete(d.querySelector('button'), async () => {
+          try { await dbDel('places', pl.id); myPlaces = myPlaces.filter(x => x.id !== pl.id); drawPlaces(); } catch (e) { dbFail(); }
+        });
+        return d;
+      }).addTo(myLayer);
+  });
+}
+dbAll('places').then(a => { myPlaces = a; drawPlaces(); }).catch(dbFail);
+map.on('contextmenu', e => {
+  if (e.originalEvent) e.originalEvent.preventDefault();
+  placeAt = e.latlng; $('pname').value = ''; $('placeSheet').hidden = false;
+});
+$('pcancel').onclick = () => { $('placeSheet').hidden = true; placeAt = null; };
+$('psave').onclick = async () => {
+  if (!placeAt) return;
+  const pl = { id: Date.now(), lat: placeAt.lat, lng: placeAt.lng, name: $('pname').value.trim(), cat: $('pcat').value };
+  try { await dbPut('places', pl); myPlaces.push(pl); drawPlaces(); $('status').textContent = 'Place saved.'; } catch (e) { dbFail(); }
+  $('placeSheet').hidden = true; placeAt = null;
+};
+
 function addBattle(b) {
   const v = k => b[k] && b[k].value;
   const id = v('item'); if (!id || siteSeen.has(id)) return;
