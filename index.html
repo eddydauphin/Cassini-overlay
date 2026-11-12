@@ -38,6 +38,7 @@
     <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
     <button data-ll="50.4472,2.0556">Fressin</button>
     <button id="locate">My position</button>
+    <button id="install" hidden>Install app</button>
     <select id="base" aria-label="Base map"></select>
   </div>
   <div id="status">Loading Cassini layer…</div>
@@ -153,6 +154,18 @@ map.on('locationerror', () => {
   tracking = false; map.stopLocate();
   $('status').textContent = 'Position unavailable – allow location for this app in Chrome and switch GPS on.';
 });
+
+/* ---------- Install button (Chrome / Android) ---------- */
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault(); installEvt = e; $('install').hidden = false;
+});
+$('install').onclick = async () => {
+  if (!installEvt) return;
+  installEvt.prompt(); await installEvt.userChoice;
+  installEvt = null; $('install').hidden = true;
+};
+window.addEventListener('appinstalled', () => { $('install').hidden = true; });
 
 /* ---------- Optional Google Maps base ---------- */
 function loadScript(src) {
