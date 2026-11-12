@@ -21,7 +21,7 @@
   #opacity { flex: 1; min-width: 120px; }
   button, select { font: inherit; padding: 6px 10px; border: 1px solid #b9a984; border-radius: 6px; background: #fff; color: inherit; }
   #status { font-size: 12px; color: #7a6a45; }
-  #keyrow input { flex: 1; min-width: 140px; font: inherit; padding: 6px; border: 1px solid #b9a984; border-radius: 6px; }
+  #keyrow input, #gorow input { flex: 1; min-width: 140px; font: inherit; padding: 6px; border: 1px solid #b9a984; border-radius: 6px; }
   details summary { cursor: pointer; font-size: 12px; color: #7a6a45; padding: 4px 0; }
   #trip.rec { background: #c0392b; color: #fff; border-color: #c0392b; }
   .sheet { position: absolute; inset: 0; z-index: 2000; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
@@ -73,7 +73,12 @@
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
       <button data-ll="50.4472,2.0556">Fressin</button>
+      <button data-ll="45.7578,4.8320">Lyon</button>
       <select id="base" aria-label="Base map"></select>
+    </div>
+    <div class="row" id="gorow">
+      <input id="goname" placeholder="Go to a town or village in France">
+      <button id="go">Go</button>
     </div>
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
@@ -683,6 +688,22 @@ $('clues').onclick = () => {
   else { map.removeLayer(cluesLayer); $('status').textContent = 'Name clues hidden.'; }
 };
 map.on('moveend', () => { clearTimeout(cluesTimer); cluesTimer = setTimeout(loadClues, 800); });
+
+/* ---------- Go to any French commune (official geo.api.gouv.fr directory) ---------- */
+async function goTo() {
+  const name = $('goname').value.trim(); if (!name) return;
+  $('status').textContent = 'Searching…';
+  try {
+    const r = await fetch('https://geo.api.gouv.fr/communes?nom=' + encodeURIComponent(name) + '&fields=nom,centre,codeDepartement&boost=population&limit=1');
+    const d = r.ok ? await r.json() : [];
+    if (!d.length || !d[0].centre) { $('status').textContent = 'No town found with that name.'; return; }
+    const c = d[0].centre.coordinates;
+    follow = false; map.setView([c[1], c[0]], 13);
+    $('status').textContent = d[0].nom + ' (' + d[0].codeDepartement + ')';
+  } catch (e) { $('status').textContent = 'Search failed – check the connection.'; }
+}
+$('go').onclick = goTo;
+$('goname').onkeydown = e => { if (e.key === 'Enter') goTo(); };
 
 /* ---------- Install button (Chrome / Android) ---------- */
 let installEvt = null;
