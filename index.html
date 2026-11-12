@@ -39,6 +39,9 @@
   .item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
   .primary { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
   .findpin { width: 18px; height: 18px; border-radius: 50%; background: #e0a800; border: 3px solid #fff; box-shadow: 0 0 0 1px #6b5200, 0 1px 4px rgba(0,0,0,.5); }
+  #clues.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
+  .clue { white-space: nowrap; font: 600 11px system-ui, sans-serif; color: #111; background: rgba(255,255,255,.92);
+    border: 2px solid #555; border-radius: 10px; padding: 1px 6px; transform: translate(-50%, -50%); display: inline-block; }
   #sites.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
   #legend { font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0; }
   #legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; border: 1px solid #fff; box-shadow: 0 0 0 1px #555; }
@@ -60,6 +63,7 @@
     <button id="find">Add find</button>
     <button id="hist">History</button>
     <button id="sites">Historic sites</button>
+    <button id="clues">Name clues</button>
     <button id="install" hidden>Install app</button>
   </div>
   <div id="status">Loading Cassini layer…</div>
@@ -71,6 +75,7 @@
       <button data-ll="50.4472,2.0556">Fressin</button>
       <select id="base" aria-label="Base map"></select>
     </div>
+    <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
     <div class="row" id="keyrow">
@@ -594,6 +599,90 @@ $('sites').onclick = () => {
   else { map.removeLayer(sitesLayer); $('status').textContent = 'Historic sites hidden.'; }
 };
 map.on('moveend', () => { clearTimeout(sitesTimer); sitesTimer = setTimeout(loadSites, 800); });
+
+/* ---------- Cadastre overlay (IGN Parcellaire Express) ---------- */
+const cadUrl = (layer, style) =>
+  'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&TILEMATRIXSET=PM&FORMAT=image/png' +
+  '&LAYER=' + layer + '&STYLE=' + encodeURIComponent(style) + '&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+const cadCandidates = [['CADASTRALPARCELS.PARCELLAIRE_EXPRESS', 'PCI vecteur'], ['CADASTRALPARCELS.PARCELLAIRE_EXPRESS', 'normal'],
+                       ['CADASTRALPARCELS.PARCELS', 'normal'], ['CADASTRALPARCELS.PARCELS', 'bdparcellaire']];
+let cadLayer = null;
+function cadProbe(i) {
+  if (i >= cadCandidates.length) { $('status').textContent = 'Cadastre layer not available right now.'; $('cad').checked = false; return; }
+  const [layer, style] = cadCandidates[i], img = new Image();
+  img.onload = () => {
+    cadLayer = L.tileLayer(cadUrl(layer, style), { maxNativeZoom: 19, maxZoom: 19, minZoom: 13, opacity: .9, attribution: 'Cadastre © IGN / DGFiP' });
+    if ($('cad').checked) showCad();
+  };
+  img.onerror = () => cadProbe(i + 1);
+  img.src = cadUrl(layer, style).replace('{z}', 15).replace('{x}', 16571).replace('{y}', 11049);
+}
+function showCad() {
+  cadLayer.addTo(map);
+  $('status').textContent = map.getZoom() < 13 ? 'Cadastre on – zoom in closer to see the plots.' : 'Cadastre on.';
+}
+$('cad').onchange = () => {
+  if (!$('cad').checked) { if (cadLayer) map.removeLayer(cadLayer); return; }
+  if (cadLayer) showCad(); else cadProbe(0);
+};
+
+/* ---------- Place-name clues: lieux-dits whose name hints at history ---------- */
+// Tested on the name in lower case without accents.
+const CLUES = [
+  { color: '#6c3483', why: 'Templars / Hospitallers: land of a military order',        re: /\b(templ\w*|commanderie|hospital\w*|hopital)\b/ },
+  { color: '#6c3483', why: 'Religious house, chapel or leper hospital, often vanished', re: /\b(abbaye|abbe|prieure|moines?|moutier|moustier|couvent|cloitre|chapelle|ermitage|maladrerie|ladrerie|chartreuse|eglise)\b/ },
+  { color: '#8e44ad', why: 'Castle, motte or fortification',                              re: /\b(chateau\w*|chatel\w*|catel\w*|castel\w*|motte\w*|donjon|tours?|forts?|fortins?|forteresse|ferte|plessis|bastille|redoute|remparts?|fosses|garenne|manoir|fief|seigneur\w*)\b/ },
+  { color: '#c0392b', why: 'Battle, army camp or soldiers',                               re: /\b(batailles?|camps?|guerre|combat|anglais|espagnols?|bourguignons?|sarrasins?|prussiens?|cosaques?|soldats?|canons?|tranchees?|armee|gendarmes?)\b/ },
+  { color: '#7b241c', why: 'Gallows, justice or burial place',                            re: /\b(justice|gibet|potence|fourches|pendus?|tombes?|tombelles?|tombeau|cimetiere|ossuaire|morts?)\b/ },
+  { color: '#d35400', why: 'Roman road, ancient or lost settlement',                      re: /\b(chaussee|brunehaut|estrees?|romains?|cesar|tumulus|vieille ville|vieville|vieux|ancien\w*|mazures?|masures?|tuiler\w*|tresor|terres noires|pierres?)\b/ },
+  { color: '#1f618d', why: 'Old mill, forge or workshop',                                 re: /\b(moulins?|forges?|verrerie|briqueterie|four a chaux|ferme detruite)\b/ }
+];
+const cluesLayer = L.layerGroup(), clueSeen = new Set();
+let cluesOn = false, cluesLoaded = null, cluesBusy = false, cluesTimer = null;
+const plain = s => String(s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[-'’]/g, ' ');
+function firstXY(c) { while (Array.isArray(c) && Array.isArray(c[0])) c = c[0]; return c; }
+async function fetchNames(type, b) {
+  const url = 'https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=' + type +
+    '&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326&COUNT=5000&BBOX=' +
+    [b.getSouth(), b.getWest(), b.getNorth(), b.getEast()].map(n => n.toFixed(5)).join(',') + ',urn:ogc:def:crs:EPSG::4326';
+  try {
+    const r = await fetch(url); if (!r.ok) return null;
+    const d = await r.json(); return Array.isArray(d.features) ? d.features : null;
+  } catch (e) { return null; }
+}
+function addClue(f) {
+  const pr = f.properties || {}, name = pr.toponyme || pr.graphie_du_toponyme || pr.graphie || pr.nom;
+  if (!name || !f.geometry) return;
+  const rule = CLUES.find(c => c.re.test(plain(name))); if (!rule) return;
+  let xy = firstXY(f.geometry.coordinates); if (!xy || xy.length < 2) return;
+  let lon = xy[0], lat = xy[1]; if (lon > 20) { lon = xy[1]; lat = xy[0]; }   // some servers answer lat,lon
+  const key = plain(name) + '|' + lat.toFixed(3) + '|' + lon.toFixed(3); if (clueSeen.has(key)) return;
+  clueSeen.add(key);
+  L.marker([lat, lon], { icon: L.divIcon({ className: '', iconSize: [0, 0], html: '<span class="clue" style="border-color:' + rule.color + '">' + esc(name) + '</span>' }) })
+    .bindPopup('<div class="pop"><b>' + esc(name) + '</b><br>' + esc(rule.why) + '<br><small>A name is only a hint, not proof of a site.</small></div>')
+    .addTo(cluesLayer);
+}
+async function loadClues() {
+  if (!cluesOn || cluesBusy) return;
+  if (map.getZoom() < 12) { $('status').textContent = 'Zoom in to load place-name clues.'; return; }
+  const b = map.getBounds();
+  if (cluesLoaded && cluesLoaded.contains(b)) return;
+  const q = b.pad(.25);
+  cluesBusy = true; $('status').textContent = 'Reading place names…';
+  const res = await Promise.all([fetchNames('BDTOPO_V3:lieu_dit_non_habite', q), fetchNames('BDTOPO_V3:toponymie_lieux_nommes', q)]);
+  cluesBusy = false;
+  if (!res[0] && !res[1]) { $('status').textContent = 'Place names could not be loaded (IGN name service failed).'; return; }
+  const total = (res[0] || []).length + (res[1] || []).length;
+  res.forEach(a => (a || []).forEach(addClue));
+  cluesLoaded = q;
+  $('status').textContent = cluesLayer.getLayers().length + ' suggestive name(s) flagged out of ' + total + ' place names read – tap a label.';
+}
+$('clues').onclick = () => {
+  cluesOn = !cluesOn; $('clues').classList.toggle('on', cluesOn);
+  if (cluesOn) { cluesLayer.addTo(map); loadClues(); }
+  else { map.removeLayer(cluesLayer); $('status').textContent = 'Name clues hidden.'; }
+};
+map.on('moveend', () => { clearTimeout(cluesTimer); cluesTimer = setTimeout(loadClues, 800); });
 
 /* ---------- Install button (Chrome / Android) ---------- */
 let installEvt = null;
