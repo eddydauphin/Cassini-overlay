@@ -85,6 +85,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 11</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -753,6 +754,16 @@ async function goTo() {
 }
 $('go').onclick = goTo;
 $('goname').onkeydown = e => { if (e.key === 'Enter') goTo(); };
+
+/* ---------- Force the latest version (saved trips, finds and places are kept) ---------- */
+$('update').onclick = async () => {
+  $('status').textContent = 'Updating…';
+  try {
+    if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+    if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+  } catch (e) {}
+  location.reload();
+};
 
 /* ---------- Install button (Chrome / Android) ---------- */
 let installEvt = null;
