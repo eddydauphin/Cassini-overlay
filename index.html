@@ -39,6 +39,10 @@
   .item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
   .primary { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
   .findpin { width: 18px; height: 18px; border-radius: 50%; background: #e0a800; border: 3px solid #fff; box-shadow: 0 0 0 1px #6b5200, 0 1px 4px rgba(0,0,0,.5); }
+  #sites.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
+  #legend { font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 0; }
+  #legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; border: 1px solid #fff; box-shadow: 0 0 0 1px #555; }
+  .pop a { color: #1a5fb4; }
   .pop img { width: 200px; max-width: 100%; border-radius: 6px; display: block; margin-bottom: 6px; }
 </style>
 </head>
@@ -55,6 +59,7 @@
     <button id="trip">Start trip</button>
     <button id="find">Add find</button>
     <button id="hist">History</button>
+    <button id="sites">Historic sites</button>
     <button id="install" hidden>Install app</button>
   </div>
   <div id="status">Loading Cassini layer…</div>
@@ -66,6 +71,7 @@
       <button data-ll="50.4472,2.0556">Fressin</button>
       <select id="base" aria-label="Base map"></select>
     </div>
+    <div id="legend"></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -399,6 +405,119 @@ $('export').onclick = () => {
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 };
+
+/* ---------- Known historic sites (OpenStreetMap data, loaded for the visible area) ---------- */
+const CATS = {
+  castle: { label: 'Castles, mottes & manors', color: '#8e44ad' },
+  battle: { label: 'Battles & sieges (all periods)', color: '#c0392b' },
+  milit:  { label: 'Forts, camps, bunkers & trenches', color: '#566573' },
+  arch:   { label: 'Archaeological sites',     color: '#d35400' },
+  other:  { label: 'Ruins, towers, walls, abbeys', color: '#16a085' }
+};
+$('legend').innerHTML = Object.values(CATS).map(c => '<span><i style="background:' + c.color + '"></i>' + c.label + '</span>').join('');
+function siteCat(t) {
+  const h = t.historic;
+  if (h === 'castle' || h === 'manor' || h === 'castle_wall') return 'castle';
+  if (h === 'battlefield') return 'battle';
+  if (h === 'fort' || h === 'fortification' || h === 'bunker' || t.military || t['abandoned:military']) return 'milit';
+  if (h === 'archaeological_site' || h === 'earthworks') return 'arch';
+  return 'other';
+}
+const pretty = s => String(s).replace(/[_;]/g, ' ');
+const SITE_MIN_ZOOM = 11;
+const sitesLayer = L.layerGroup(), siteSeen = new Set();
+let sitesOn = false, sitesLoaded = null, sitesBusy = false, sitesTimer = null;
+
+function addSite(el) {
+  const key = el.type + el.id; if (siteSeen.has(key)) return;
+  const lat = el.lat != null ? el.lat : el.center && el.center.lat, lon = el.lon != null ? el.lon : el.center && el.center.lon;
+  if (lat == null || lon == null) return;
+  siteSeen.add(key);
+  const t = el.tags || {}, cat = CATS[siteCat(t)];
+  const kind = [t.historic || t.military || t['abandoned:military'], t.castle_type, t.site_type, t.fortification_type, t.bunker_type, t.ruins].filter(Boolean).map(pretty);
+  const period = [t['historic:civilization'], t['historic:period'], t.start_date].filter(Boolean).map(pretty);
+  let link = '';
+  if (t.wikipedia && t.wikipedia.indexOf(':') > 0) {
+    const i = t.wikipedia.indexOf(':');
+    link = 'https://' + encodeURIComponent(t.wikipedia.slice(0, i)) + '.wikipedia.org/wiki/' + encodeURIComponent(t.wikipedia.slice(i + 1).replace(/ /g, '_'));
+  } else if (/^Q\d+$/.test(t.wikidata || '')) link = 'https://www.wikidata.org/wiki/' + t.wikidata;
+  L.circleMarker([lat, lon], { radius: 7, color: '#fff', weight: 2, fillColor: cat.color, fillOpacity: .95 })
+    .bindPopup('<div class="pop"><b>' + esc(t.name || t['name:fr'] || cat.label) + '</b><br>' +
+      esc([...new Set(kind)].join(' · ')) + (period.length ? '<br>' + esc(period.join(' · ')) : '') +
+      (t.description ? '<br><small>' + esc(t.description) + '</small>' : '') +
+      (link ? '<br><a href="' + link + '" target="_blank" rel="noopener">More information</a>' : '') + '</div>')
+    .addTo(sitesLayer);
+}
+async function loadSites() {
+  if (!sitesOn || sitesBusy) return;
+  if (map.getZoom() < SITE_MIN_ZOOM) { $('status').textContent = 'Zoom in to load historic sites.'; return; }
+  const b = map.getBounds();
+  if (sitesLoaded && sitesLoaded.contains(b)) return;
+  const q = b.pad(.3), box = [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(4)).join(',');
+  const query = '[out:json][timeout:25];(' +
+    'nwr["historic"~"^(castle|manor|castle_wall|battlefield|archaeological_site|earthworks|fort|fortification|bunker|ruins|tower|city_gate|citywalls|monastery)$"](' + box + ');' +
+    'nwr["military"~"^(bunker|trench)$"](' + box + ');' +
+    'nwr["abandoned:military"](' + box + ');' +
+    ');out center tags 600;';
+  sitesBusy = true; $('status').textContent = 'Loading historic sites…';
+  const [places, battles] = await Promise.all([fetchPlaces(query), fetchBattles(q)]);
+  sitesBusy = false;
+  if (!places && !battles) { $('status').textContent = 'Historic sites could not be loaded – check the connection and try again.'; return; }
+  (places || []).forEach(addSite);
+  (battles || []).forEach(addBattle);
+  if (places && battles) sitesLoaded = q;        // retry next time if one source failed
+  const n = sitesLayer.getLayers().length;
+  $('status').textContent = n + ' known historic site(s) loaded – tap a dot for details.' +
+    (!places ? ' (Castles/bunkers source unavailable.)' : '') + (!battles ? ' (Battles source unavailable.)' : '') +
+    ((places || []).length >= 600 ? ' Zoom in to see them all.' : '');
+}
+async function fetchPlaces(query) {              // OpenStreetMap: castles, manors, forts, bunkers, trenches, ruins…
+  for (const host of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
+    try {
+      const r = await fetch(host, { method: 'POST', body: 'data=' + encodeURIComponent(query),
+                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (Array.isArray(d.elements)) return d.elements;
+    } catch (e) {}
+  }
+  return null;
+}
+async function fetchBattles(q) {                 // Wikidata: battles and sieges of every period (medieval, Spanish wars, WW1, WW2…)
+  const sparql = 'SELECT ?item ?itemLabel ?loc ?date ?start ?warLabel ?article WHERE {' +
+    'SERVICE wikibase:box { ?item wdt:P625 ?loc. bd:serviceParam wikibase:cornerSouthWest "Point(' + q.getWest().toFixed(4) + ' ' + q.getSouth().toFixed(4) + ')"^^geo:wktLiteral;' +
+    ' wikibase:cornerNorthEast "Point(' + q.getEast().toFixed(4) + ' ' + q.getNorth().toFixed(4) + ')"^^geo:wktLiteral. }' +
+    ' VALUES ?cls { wd:Q178561 wd:Q188055 } ?item wdt:P31/wdt:P279* ?cls.' +
+    ' OPTIONAL { ?item wdt:P585 ?date } OPTIONAL { ?item wdt:P580 ?start } OPTIONAL { ?item wdt:P361 ?war }' +
+    ' OPTIONAL { ?article schema:about ?item; schema:isPartOf <https://fr.wikipedia.org/> }' +
+    ' SERVICE wikibase:label { bd:serviceParam wikibase:language "en,fr" } } LIMIT 400';
+  try {
+    const r = await fetch('https://query.wikidata.org/sparql?format=json&query=' + encodeURIComponent(sparql),
+                          { headers: { Accept: 'application/sparql-results+json' } });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return d.results && Array.isArray(d.results.bindings) ? d.results.bindings : null;
+  } catch (e) { return null; }
+}
+function addBattle(b) {
+  const v = k => b[k] && b[k].value;
+  const id = v('item'); if (!id || siteSeen.has(id)) return;
+  const m = /Point\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)/.exec(v('loc') || ''); if (!m) return;
+  siteSeen.add(id);
+  const when = v('date') || v('start'), year = when ? String(parseInt(when, 10)) : '';
+  const link = /^https:\/\//.test(v('article') || '') ? v('article') : (/^https?:\/\/www\.wikidata\.org\//.test(id) ? id.replace(/^http:/, 'https:') : '');
+  L.circleMarker([+m[2], +m[1]], { radius: 8, color: '#fff', weight: 2, fillColor: CATS.battle.color, fillOpacity: .95 })
+    .bindPopup('<div class="pop"><b>' + esc(v('itemLabel') || 'Battle') + '</b>' + (year ? ' (' + esc(year) + ')' : '') +
+      (v('warLabel') ? '<br>' + esc(v('warLabel')) : '') +
+      (link ? '<br><a href="' + esc(link) + '" target="_blank" rel="noopener">More information</a>' : '') + '</div>')
+    .addTo(sitesLayer);
+}
+$('sites').onclick = () => {
+  sitesOn = !sitesOn; $('sites').classList.toggle('on', sitesOn);
+  if (sitesOn) { sitesLayer.addTo(map); loadSites(); }
+  else { map.removeLayer(sitesLayer); $('status').textContent = 'Historic sites hidden.'; }
+};
+map.on('moveend', () => { clearTimeout(sitesTimer); sitesTimer = setTimeout(loadSites, 800); });
 
 /* ---------- Install button (Chrome / Android) ---------- */
 let installEvt = null;
