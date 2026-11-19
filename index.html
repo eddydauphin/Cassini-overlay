@@ -86,7 +86,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 13</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 14</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -790,9 +790,12 @@ function drawItiner() {
   const view = map.getBounds().pad(.2); let n = 0;
   for (const s of itiner) {
     if (!view.intersects(s.b)) continue;
-    const main = /main/i.test(s.t), unsure = /conject|hypoth|uncertain|assum|possible/i.test(s.c);
-    L.polyline(s.l, { renderer: itinerCanvas, color: '#b03a2e', weight: main ? 5 : 3, opacity: .85, dashArray: unsure ? '8 8' : null })
-      .bindPopup('<div class="pop"><b>' + esc(s.n || 'Roman road') + '</b><br>' + esc([s.t, s.c].filter(Boolean).join(' · ')) +
+    const main = /main/i.test(s.t);
+    const dash = /certain/i.test(s.c) ? null : /hypoth/i.test(s.c) ? '2 9' : '14 7';
+    const note = /certain/i.test(s.c) ? 'Course located precisely' : /hypoth/i.test(s.c) ? 'Road assumed to exist – course is a guess'
+               : 'Road known to exist – exact course approximate';
+    L.polyline(s.l, { renderer: itinerCanvas, color: '#b03a2e', weight: main ? 5 : 3, opacity: .9, dashArray: dash })
+      .bindPopup('<div class="pop"><b>' + esc(s.n || 'Roman road') + '</b><br>' + esc(s.t || 'Road') + '<br>' + note +
                  '<br><small>Source: Itiner-e</small></div>')
       .addTo(itinerLayer);
     if (++n >= 1500) break;
@@ -803,7 +806,7 @@ async function loadRoman() {
   if (!romanOn || romanBusy) return;
   await loadItiner();
   const nIt = drawItiner();
-  if (nIt) $('status').textContent = nIt + ' Roman road section(s) from the Itiner-e research dataset – thick: main road, dashed: uncertain course.';
+  if (nIt) $('status').textContent = nIt + ' Roman road section(s) – thick: main road, solid: located precisely, dashed: approximate course, dotted: assumed.';
   if (map.getZoom() < 10) { $('status').textContent = 'Zoom in to load Roman roads.'; return; }
   const b = map.getBounds();
   if (romanLoaded && romanLoaded.contains(b)) return;
