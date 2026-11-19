@@ -1,0 +1,29 @@
+name: Update Roman roads data
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tools/build_roman_roads.py
+      - .github/workflows/roman-roads.yml
+  schedule:
+    - cron: "17 3 1 * *"
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build France extract from Itiner-e
+        run: python3 tools/build_roman_roads.py
+      - name: Commit if changed
+        run: |
+          ls -la roman-roads-fr.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add roman-roads-fr.json
+          git diff --cached --quiet && echo "No change" && exit 0
+          git commit -m "Update Roman roads data (Itiner-e)"
+          git push
