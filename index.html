@@ -75,7 +75,7 @@
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Places &amp; map options</summary>
+    <summary>Places &amp; map options · v15</summary>
     <div class="row">
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
@@ -86,7 +86,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 14</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 15</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -787,9 +787,16 @@ async function loadItiner() {
 function drawItiner() {
   itinerLayer.clearLayers();
   if (!itiner || !romanOn) return 0;
-  const view = map.getBounds().pad(.2); let n = 0;
+  const view = map.getBounds().pad(.2), vb = map.getBounds(); let n = 0, drawn = 0;
+  const rect = L.bounds(L.point(vb.getWest(), vb.getSouth()), L.point(vb.getEast(), vb.getNorth()));
+  const crosses = l => {                         // does the line really pass through the screen?
+    for (let i = 1; i < l.length; i++)
+      if (L.LineUtil.clipSegment(L.point(l[i - 1][1], l[i - 1][0]), L.point(l[i][1], l[i][0]), rect, false, false)) return true;
+    return false;
+  };
   for (const s of itiner) {
     if (!view.intersects(s.b)) continue;
+    if (crosses(s.l)) n++;
     const main = /main/i.test(s.t);
     const dash = /certain/i.test(s.c) ? null : /hypoth/i.test(s.c) ? '2 9' : '14 7';
     const note = /certain/i.test(s.c) ? 'Course located precisely' : /hypoth/i.test(s.c) ? 'Road assumed to exist – course is a guess'
@@ -798,18 +805,47 @@ function drawItiner() {
       .bindPopup('<div class="pop"><b>' + esc(s.n || 'Roman road') + '</b><br>' + esc(s.t || 'Road') + '<br>' + note +
                  '<br><small>Source: Itiner-e</small></div>')
       .addTo(itinerLayer);
-    if (++n >= 1500) break;
+    if (++drawn >= 1500) break;
   }
   return n;
 }
-async function loadRoman() {
+function nearestRoman() {                       // closest dataset road to the centre of the screen
+  if (!itiner) return null;
+  const c = map.getCenter(), k = Math.cos(c.lat * Math.PI / 180); let best = null, bd = Infinity;
+  for (const s of itiner) for (const p of s.l) {
+    const dy = p[0] - c.lat, dx = (p[1] - c.lng) * k, d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = { p, s, dx, dy }; }
+  }
+  if (!best) return null;
+  const dirs = ['east', 'north-east', 'north', 'north-west', 'west', 'south-west', 'south', 'south-east'];
+  best.km = Math.sqrt(bd) * 111.2;
+  best.dir = dirs[Math.round(Math.atan2(best.dy, best.dx) / (Math.PI / 4) + 8) % 8];
+  return best;
+}
+function romanEmptyNote() {
+  const nr = nearestRoman();
+  return nr ? 'Roman roads on – none in this view. Nearest: ' + (nr.s.n || 'road') + ', ' + nr.km.toFixed(1) + ' km to the ' + nr.dir + '.'
+            : 'Roman roads on – none recorded in this view.';
+}
+async function loadRoman(fromButton) {
   if (!romanOn || romanBusy) return;
   await loadItiner();
-  const nIt = drawItiner();
+  let nIt = drawItiner();
+  if (!nIt && fromButton) {                      // just switched on: widen the view to reach the nearest road
+    const nr = nearestRoman();
+    if (nr && nr.km < 40) {
+      follow = false;
+      map.fitBounds(L.latLngBounds([map.getCenter(), nr.p]).pad(.6), { maxZoom: map.getZoom() });
+      nIt = drawItiner();
+    }
+  }
   if (nIt) $('status').textContent = nIt + ' Roman road section(s) – thick: main road, solid: located precisely, dashed: approximate course, dotted: assumed.';
   if (map.getZoom() < 10) { $('status').textContent = 'Zoom in to load Roman roads.'; return; }
   const b = map.getBounds();
-  if (romanLoaded && romanLoaded.contains(b)) return;
+  if (romanLoaded && romanLoaded.contains(b)) {
+    if (!nIt) $('status').textContent = romanLayer.getLayers().length ? 'Roman roads on.' : romanEmptyNote();
+    return;
+  }
   const q = b.pad(.5), box = [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(4)).join(',');
   const query = '[out:json][timeout:25];(' +
     'way["historic"="roman_road"](' + box + ');' +
@@ -821,20 +857,19 @@ async function loadRoman() {
   romanBusy = true; if (!nIt) $('status').textContent = 'Loading Roman roads…';
   const els = await fetchPlaces(query);
   romanBusy = false;
-  if (!els) { if (!nIt) $('status').textContent = 'Roman roads could not be loaded – check the connection and try again.'; return; }
+  if (!els) { if (!nIt) $('status').textContent = itiner ? romanEmptyNote() : 'Roman roads could not be loaded – check the connection and try again.'; return; }
   els.forEach(addRoman);
   romanLoaded = q;
   const n = romanLayer.getLayers().length;
   if (nIt) return;
-  $('status').textContent = n ? n + ' Roman road section(s) – solid: recorded as Roman, dashed: by name only.'
-                              : 'No Roman road recorded in this area.';
+  $('status').textContent = n ? n + ' Roman road section(s) – solid: recorded as Roman, dashed: by name only.' : romanEmptyNote();
 }
 $('roman').onclick = () => {
   romanOn = !romanOn; $('roman').classList.toggle('on', romanOn);
-  if (romanOn) { romanLayer.addTo(map); itinerLayer.addTo(map); loadRoman(); }
+  if (romanOn) { romanLayer.addTo(map); itinerLayer.addTo(map); $('status').textContent = 'Loading Roman roads…'; loadRoman(true); }
   else { map.removeLayer(romanLayer); map.removeLayer(itinerLayer); $('status').textContent = 'Roman roads hidden.'; }
 };
-map.on('moveend', () => { clearTimeout(romanTimer); romanTimer = setTimeout(loadRoman, 800); });
+map.on('moveend', () => { clearTimeout(romanTimer); romanTimer = setTimeout(() => loadRoman(false), 800); });
 
 /* ---------- Force the latest version (saved trips, finds and places are kept) ---------- */
 $('update').onclick = async () => {
