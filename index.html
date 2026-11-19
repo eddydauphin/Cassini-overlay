@@ -39,7 +39,7 @@
   .item img { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; }
   .primary { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
   .findpin { width: 18px; height: 18px; border-radius: 50%; background: #e0a800; border: 3px solid #fff; box-shadow: 0 0 0 1px #6b5200, 0 1px 4px rgba(0,0,0,.5); }
-  #sat.on, #lidar.on, #clues.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
+  #sat.on, #lidar.on, #roman.on, #clues.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
   .clue { white-space: nowrap; font: 600 11px system-ui, sans-serif; color: #111; background: rgba(255,255,255,.92);
     border: 2px solid #555; border-radius: 10px; padding: 1px 6px; transform: translate(-50%, -50%); display: inline-block; }
   #sites.on { background: #8a6d3b; color: #fff; border-color: #8a6d3b; }
@@ -66,6 +66,7 @@
     <button id="clues">Name clues</button>
     <button id="sat">Satellite</button>
     <button id="lidar">LiDAR</button>
+    <button id="roman">Roman roads</button>
     <button id="install" hidden>Install app</button>
   </div>
   <div class="row" id="gorow">
@@ -85,7 +86,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 11</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 12</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -754,6 +755,52 @@ async function goTo() {
 }
 $('go').onclick = goTo;
 $('goname').onkeydown = e => { if (e.key === 'Enter') goTo(); };
+
+/* ---------- Roman roads (OpenStreetMap: ways recorded as Roman, or named voie romaine / chaussée Brunehaut…) ---------- */
+const romanLayer = L.layerGroup(), romanSeen = new Set();
+let romanOn = false, romanLoaded = null, romanBusy = false, romanTimer = null;
+function addRoman(el) {
+  const key = el.type + el.id; if (romanSeen.has(key)) return;
+  const parts = el.geometry ? [el.geometry] : (el.members || []).map(m => m.geometry).filter(Boolean);
+  const lines = parts.map(g => g.filter(Boolean).map(pt => [pt.lat, pt.lon])).filter(l => l.length > 1);
+  if (!lines.length) return;
+  romanSeen.add(key);
+  const t = el.tags || {}, sure = t.historic === 'roman_road' || t.roman_road === 'yes' || /roman/i.test(t['historic:civilization'] || '');
+  L.polyline(lines, { color: '#b03a2e', weight: 5, opacity: .85, dashArray: sure ? null : '8 8' })
+    .bindPopup('<div class="pop"><b>' + esc(t.name || 'Roman road') + '</b><br>' +
+      (sure ? 'Recorded as a Roman road' : 'Named after a Roman road – course not confirmed') +
+      (t.description ? '<br><small>' + esc(t.description) + '</small>' : '') + '</div>')
+    .addTo(romanLayer);
+}
+async function loadRoman() {
+  if (!romanOn || romanBusy) return;
+  if (map.getZoom() < 10) { $('status').textContent = 'Zoom in to load Roman roads.'; return; }
+  const b = map.getBounds();
+  if (romanLoaded && romanLoaded.contains(b)) return;
+  const q = b.pad(.5), box = [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(4)).join(',');
+  const query = '[out:json][timeout:25];(' +
+    'way["historic"="roman_road"](' + box + ');' +
+    'relation["historic"="roman_road"](' + box + ');' +
+    'way["roman_road"="yes"](' + box + ');' +
+    'way["historic"="road"]["historic:civilization"~"roman",i](' + box + ');' +
+    'way["highway"]["name"~"voie romaine|chaussée brunehaut|chaussee brunehaut|chaussée romaine|chemin des romains|chemin de césar|voie d.agrippa|via agrippa|via domitia|voie domitienne",i](' + box + ');' +
+    ');out geom tags 800;';
+  romanBusy = true; $('status').textContent = 'Loading Roman roads…';
+  const els = await fetchPlaces(query);
+  romanBusy = false;
+  if (!els) { $('status').textContent = 'Roman roads could not be loaded – check the connection and try again.'; return; }
+  els.forEach(addRoman);
+  romanLoaded = q;
+  const n = romanLayer.getLayers().length;
+  $('status').textContent = n ? n + ' Roman road section(s) – solid: recorded as Roman, dashed: by name only.'
+                              : 'No Roman road recorded in this area.';
+}
+$('roman').onclick = () => {
+  romanOn = !romanOn; $('roman').classList.toggle('on', romanOn);
+  if (romanOn) { romanLayer.addTo(map); loadRoman(); }
+  else { map.removeLayer(romanLayer); $('status').textContent = 'Roman roads hidden.'; }
+};
+map.on('moveend', () => { clearTimeout(romanTimer); romanTimer = setTimeout(loadRoman, 800); });
 
 /* ---------- Force the latest version (saved trips, finds and places are kept) ---------- */
 $('update').onclick = async () => {
