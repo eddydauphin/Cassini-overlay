@@ -75,7 +75,7 @@
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Places &amp; map options · v15</summary>
+    <summary>Places &amp; map options · v16</summary>
     <div class="row">
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
@@ -86,7 +86,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 15</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 16</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -165,6 +165,7 @@ function refreshBaseList(selected) {
   if (selected) $('base').value = selected;
 }
 function setBase(name) {
+  if (!bases[name]) name = 'Satellite';          // never leave the map without a background
   if (currentBase) map.removeLayer(currentBase);
   currentBase = bases[name].addTo(map);
   if (currentBase.bringToBack) currentBase.bringToBack();
@@ -175,12 +176,15 @@ function setBase(name) {
 let prevBase = 'OpenStreetMap';
 function toggleBase(name) {
   const now = $('base').value;
-  if (now === name) return setBase(prevBase);
-  if (now !== 'Satellite' && now !== 'LiDAR relief') prevBase = now;
+  if (now === name) return setBase(prevBase !== name ? prevBase : 'OpenStreetMap');
+  if (now && now !== name && bases[now]) prevBase = now;
   setBase(name);
   if (+$('opacity').value > 40) $('status').textContent = name + ' on – slide towards "Today" to see it through the Cassini map.';
 }
 $('sat').onclick = () => toggleBase('Satellite');
+refreshBaseList();
+setBase('Satellite');                            // default background: aerial photo
+$('base').onchange = e => setBase(e.target.value);
 
 /* LiDAR relief (IGN shaded ground model, vegetation removed): shows banks, ditches, mottes, old tracks. */
 const lidarUrl = (layer, style) =>
@@ -766,7 +770,7 @@ function addRoman(el) {
   if (!lines.length) return;
   romanSeen.add(key);
   const t = el.tags || {}, sure = t.historic === 'roman_road' || t.roman_road === 'yes' || /roman/i.test(t['historic:civilization'] || '');
-  L.polyline(lines, { color: '#b03a2e', weight: 5, opacity: .85, dashArray: sure ? null : '8 8' })
+  L.polyline(lines, { color: '#ff2d55', weight: 5, opacity: .95, dashArray: sure ? null : '8 8' })
     .bindPopup('<div class="pop"><b>' + esc(t.name || 'Roman road') + '</b><br>' +
       (sure ? 'Recorded as a Roman road' : 'Named after a Roman road – course not confirmed') +
       (t.description ? '<br><small>' + esc(t.description) + '</small>' : '') + '</div>')
@@ -784,28 +788,28 @@ async function loadItiner() {
     itiner = d.roads;
   } catch (e) {}
 }
-function drawItiner() {
-  itinerLayer.clearLayers();
+let itinerDrawn = false;
+function drawItiner() {                          // draws every road once; returns how many cross the screen
   if (!itiner || !romanOn) return 0;
-  const view = map.getBounds().pad(.2), vb = map.getBounds(); let n = 0, drawn = 0;
-  const rect = L.bounds(L.point(vb.getWest(), vb.getSouth()), L.point(vb.getEast(), vb.getNorth()));
-  const crosses = l => {                         // does the line really pass through the screen?
-    for (let i = 1; i < l.length; i++)
-      if (L.LineUtil.clipSegment(L.point(l[i - 1][1], l[i - 1][0]), L.point(l[i][1], l[i][0]), rect, false, false)) return true;
-    return false;
-  };
+  if (!itinerDrawn) {
+    itinerDrawn = true;
+    for (const s of itiner) {
+      const main = /main/i.test(s.t);
+      const dash = /certain/i.test(s.c) ? null : /hypoth/i.test(s.c) ? '2 9' : '14 7';
+      const note = /certain/i.test(s.c) ? 'Course located precisely' : /hypoth/i.test(s.c) ? 'Road assumed to exist – course is a guess'
+                 : 'Road known to exist – exact course approximate';
+      L.polyline(s.l, { renderer: itinerCanvas, color: '#ff2d55', weight: main ? 6 : 4, opacity: .95, dashArray: dash })
+        .bindPopup('<div class="pop"><b>' + esc(s.n || 'Roman road') + '</b><br>' + esc(s.t || 'Road') + '<br>' + note +
+                   '<br><small>Source: Itiner-e</small></div>')
+        .addTo(itinerLayer);
+    }
+  }
+  const vb = map.getBounds(), rect = L.bounds(L.point(vb.getWest(), vb.getSouth()), L.point(vb.getEast(), vb.getNorth()));
+  let n = 0;
   for (const s of itiner) {
-    if (!view.intersects(s.b)) continue;
-    if (crosses(s.l)) n++;
-    const main = /main/i.test(s.t);
-    const dash = /certain/i.test(s.c) ? null : /hypoth/i.test(s.c) ? '2 9' : '14 7';
-    const note = /certain/i.test(s.c) ? 'Course located precisely' : /hypoth/i.test(s.c) ? 'Road assumed to exist – course is a guess'
-               : 'Road known to exist – exact course approximate';
-    L.polyline(s.l, { renderer: itinerCanvas, color: '#b03a2e', weight: main ? 5 : 3, opacity: .9, dashArray: dash })
-      .bindPopup('<div class="pop"><b>' + esc(s.n || 'Roman road') + '</b><br>' + esc(s.t || 'Road') + '<br>' + note +
-                 '<br><small>Source: Itiner-e</small></div>')
-      .addTo(itinerLayer);
-    if (++drawn >= 1500) break;
+    if (!vb.intersects(s.b)) continue;
+    for (let i = 1; i < s.l.length; i++)
+      if (L.LineUtil.clipSegment(L.point(s.l[i - 1][1], s.l[i - 1][0]), L.point(s.l[i][1], s.l[i][0]), rect, false, false)) { n++; break; }
   }
   return n;
 }
@@ -828,7 +832,7 @@ function romanEmptyNote() {
             : 'Roman roads on – none recorded in this view.';
 }
 async function loadRoman(fromButton) {
-  if (!romanOn || romanBusy) return;
+  if (!romanOn) return;
   await loadItiner();
   let nIt = drawItiner();
   if (!nIt && fromButton) {                      // just switched on: widen the view to reach the nearest road
@@ -839,8 +843,10 @@ async function loadRoman(fromButton) {
       nIt = drawItiner();
     }
   }
+  if (!nIt && itiner) $('status').textContent = romanEmptyNote();
+  if (romanBusy) return;
   if (nIt) $('status').textContent = nIt + ' Roman road section(s) – thick: main road, solid: located precisely, dashed: approximate course, dotted: assumed.';
-  if (map.getZoom() < 10) { $('status').textContent = 'Zoom in to load Roman roads.'; return; }
+  if (map.getZoom() < 10) return;                // the OpenStreetMap supplement only loads when zoomed in
   const b = map.getBounds();
   if (romanLoaded && romanLoaded.contains(b)) {
     if (!nIt) $('status').textContent = romanLayer.getLayers().length ? 'Roman roads on.' : romanEmptyNote();
