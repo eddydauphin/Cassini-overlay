@@ -55,7 +55,7 @@
   <div class="row">
     <span>Today</span>
     <input id="opacity" type="range" min="0" max="100" value="65" aria-label="Cassini opacity">
-    <span>Cassini</span>
+    <span id="oldlabel">Cassini</span>
   </div>
   <div class="row">
     <button id="locate">My position</button>
@@ -70,23 +70,25 @@
     <button id="install" hidden>Install app</button>
   </div>
   <div class="row" id="gorow">
-    <input id="goname" placeholder="Go to: town, address or 45.76, 4.83" enterkeyhint="go">
+    <input id="goname" placeholder="Go to: town, address or 59.43, 24.75" enterkeyhint="go">
     <button id="go">Go</button>
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Places &amp; map options · v16</summary>
+    <summary>Places &amp; map options · v17</summary>
     <div class="row">
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
       <button data-ll="50.4472,2.0556">Fressin</button>
       <button data-ll="45.7578,4.8320">Lyon</button>
+      <button data-ll="59.4370,24.7536">Tallinn</button>
       <select id="base" aria-label="Base map"></select>
     </div>
+    <div class="row" id="eemaprow" hidden><label>Old map (Estonia) <select id="eemap" aria-label="Old map of Estonia"></select></label></div>
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 16</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 17</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -179,7 +181,7 @@ function toggleBase(name) {
   if (now === name) return setBase(prevBase !== name ? prevBase : 'OpenStreetMap');
   if (now && now !== name && bases[now]) prevBase = now;
   setBase(name);
-  if (+$('opacity').value > 40) $('status').textContent = name + ' on – slide towards "Today" to see it through the Cassini map.';
+  if (+$('opacity').value > 40) $('status').textContent = name + ' on – slide towards "Today" to see it through the old map.';
 }
 $('sat').onclick = () => toggleBase('Satellite');
 refreshBaseList();
@@ -190,6 +192,7 @@ $('base').onchange = e => setBase(e.target.value);
 const lidarUrl = (layer, style) =>
   'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&TILEMATRIXSET=PM&FORMAT=image/png' +
   '&LAYER=' + layer + '&STYLE=' + encodeURIComponent(style) + '&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+let frLidar = null;
 const lidarCandidates = [
   ['IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW', 'normal', 'LiDAR HD', 18],
   ['IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW', 'estompage_grayscale', 'LiDAR HD', 18],
@@ -203,7 +206,7 @@ function lidarProbe(i) {
   const y = Math.floor((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * n);
   const img = new Image();
   img.onload = () => {
-    bases['LiDAR relief'] = L.tileLayer(lidarUrl(layer, style), { maxNativeZoom: maxNative, maxZoom: 19, attribution: 'Relief © IGN' });
+    bases['LiDAR relief'] = frLidar = L.tileLayer(lidarUrl(layer, style), { maxNativeZoom: maxNative, maxZoom: 19, attribution: 'Relief © IGN' });
     refreshBaseList($('base').value);
     toggleBase('LiDAR relief');
     $('status').textContent = 'Relief source: ' + label + '. Slide towards "Today" to see it through the Cassini map.';
@@ -224,7 +227,7 @@ const candidates = [
   ['GEOGRAPHICALGRIDSYSTEMS.CASSINI', 'image/png'],
   ['GEOGRAPHICALGRIDSYSTEMS.CASSINI', 'image/jpeg']
 ];
-let cassini = null;
+let cassini = null, cassiniFR = null, curReg = 'fr';
 function probe(i) {
   if (i >= candidates.length) {
     $('status').textContent = 'Cassini layer not found on data.geopf.fr – the layer name needs updating.';
@@ -235,11 +238,14 @@ function probe(i) {
   const url = geopf(layer, format).replace('{z}', 12).replace('{x}', 2071).replace('{y}', 1382);
   const img = new Image();
   img.onload = () => {
-    cassini = L.tileLayer(geopf(layer, format), {
+    cassiniFR = L.tileLayer(geopf(layer, format), {
       maxNativeZoom: 15, maxZoom: 19, opacity: $('opacity').value / 100,
       attribution: 'Carte de Cassini © IGN / BnF'
-    }).addTo(map);
-    $('status').textContent = 'Cassini map (18th c.) over today\'s map – drag the slider to compare.';
+    });
+    if (curReg === 'fr') {
+      cassini = cassiniFR.addTo(map);
+      $('status').textContent = 'Cassini map (18th c.) over today\'s map – drag the slider to compare.';
+    }
   };
   img.onerror = () => probe(i + 1);
   img.src = url;
@@ -476,10 +482,11 @@ $('export').onclick = () => {
 
 /* ---------- Known historic sites (OpenStreetMap data, loaded for the visible area) ---------- */
 const CATS = {
-  castle: { label: 'Castles, mottes & manors', color: '#8e44ad' },
+  castle: { label: 'Castles, hillforts, mottes & manors', color: '#8e44ad' },
   battle: { label: 'Battles & sieges (all periods)', color: '#c0392b' },
   milit:  { label: 'Forts, camps, bunkers & trenches', color: '#566573' },
-  arch:   { label: 'Archaeological sites',     color: '#d35400' },
+  arch:   { label: 'Archaeological sites, burials', color: '#d35400' },
+  harbour:{ label: 'Old harbours, landing places, wrecks', color: '#2471a3' },
   other:  { label: 'Ruins, towers, walls, abbeys', color: '#16a085' }
 };
 $('legend').innerHTML = Object.values(CATS).map(c => '<span><i style="background:' + c.color + '"></i>' + c.label + '</span>').join('');
@@ -528,8 +535,10 @@ async function loadSites() {
     'nwr["abandoned:military"](' + box + ');' +
     ');out center tags 600;';
   sitesBusy = true; $('status').textContent = 'Loading historic sites…';
-  const [places, battles, wiki] = await Promise.all([fetchPlaces(query), fetchBattles(q), fetchWiki()]);
+  const [places, battles, wiki, heritage] = await Promise.all([fetchPlaces(query), fetchBattles(q), fetchWiki(),
+                                                               curReg === 'ee' ? fetchHeritageEE(q) : Promise.resolve([])]);
   sitesBusy = false;
+  (heritage || []).forEach(addHeritageEE);
   if (!places && !battles && !wiki) { $('status').textContent = 'Historic sites could not be loaded – check the connection and try again.'; return; }
   (places || []).forEach(addSite);
   (battles || []).forEach(addBattle);
@@ -537,7 +546,7 @@ async function loadSites() {
   if (places && battles && wiki) sitesLoaded = map.getBounds();        // retry next time if one source failed
   const n = sitesLayer.getLayers().length;
   $('status').textContent = n + ' known historic site(s) loaded – tap a dot for details.' +
-    (!places ? ' (OpenStreetMap source failed.)' : '') + (!battles ? ' (Wikidata source failed.)' : '') + (!wiki ? ' (Wikipedia source failed.)' : '') +
+    (!places ? ' (OpenStreetMap source failed.)' : '') + (!battles ? ' (Wikidata source failed.)' : '') + (!wiki ? ' (Wikipedia source failed.)' : '') + (!heritage ? ' (Estonian heritage register failed.)' : '') +
     ((places || []).length >= 600 ? ' Zoom in to see them all.' : '');
 }
 async function fetchPlaces(query) {              // OpenStreetMap: castles, manors, forts, bunkers, trenches, ruins…
@@ -558,8 +567,8 @@ async function fetchBattles(q) {                 // Wikidata: battles and sieges
     ' wikibase:cornerNorthEast "Point(' + q.getEast().toFixed(4) + ' ' + q.getNorth().toFixed(4) + ')"^^geo:wktLiteral. }' +
     ' VALUES ?cls { wd:Q178561 wd:Q188055 } ?item wdt:P31/wdt:P279* ?cls.' +
     ' OPTIONAL { ?item wdt:P585 ?date } OPTIONAL { ?item wdt:P580 ?start } OPTIONAL { ?item wdt:P361 ?war }' +
-    ' OPTIONAL { ?article schema:about ?item; schema:isPartOf <https://fr.wikipedia.org/> }' +
-    ' SERVICE wikibase:label { bd:serviceParam wikibase:language "en,fr" } } LIMIT 400';
+    ' OPTIONAL { ?article schema:about ?item; schema:isPartOf <https://' + wikiLang() + '.wikipedia.org/> }' +
+    ' SERVICE wikibase:label { bd:serviceParam wikibase:language "en,fr,et" } } LIMIT 400';
   try {
     const r = await fetch('https://query.wikidata.org/sparql?format=json&query=' + encodeURIComponent(sparql),
                           { headers: { Accept: 'application/sparql-results+json' } });
@@ -569,6 +578,15 @@ async function fetchBattles(q) {                 // Wikidata: battles and sieges
   } catch (e) { return null; }
 }
 // French Wikipedia articles located near the centre of the map whose title names a battle, castle, camp, fort…
+const wikiLang = () => curReg === 'ee' ? 'et' : 'fr';
+const WIKI_RULES_EE = [
+  ['battle',  /lahing|piiramine|sõda|dessant/i],
+  ['castle',  /linnus|linnamägi|maalinn|kants|mõis|loss|ordulinnus|piiskopilinnus/i],
+  ['milit',   /kindlus|patarei|kaitseliin|merekindlus|sõjaväe|lennuväli|raketibaas|punker|laager/i],
+  ['harbour', /sadam|laevamatus|laevavrakk|vrakk|viiking/i],
+  ['arch',    /kalme|kalmistu|kääbas|asulakoht|hiis|ohvri|muistis|aardeleid|peitleid/i],
+  ['other',   /klooster|varemed|kabel/i]
+];
 const WIKI_RULES = [
   ['battle', /bataille|si[èe]ge d|combat d|offensive/i],
   ['castle', /ch[âa]teau|manoir|motte|donjon|seigneurie/i],
@@ -579,7 +597,7 @@ const WIKI_RULES = [
 async function fetchWiki() {
   const c = map.getCenter();
   try {
-    const r = await fetch('https://fr.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=' + c.lat.toFixed(4) + '%7C' + c.lng.toFixed(4) +
+    const r = await fetch('https://' + wikiLang() + '.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=' + c.lat.toFixed(4) + '%7C' + c.lng.toFixed(4) +
                           '&gsradius=10000&gslimit=500&format=json&origin=*');
     if (!r.ok) return null;
     const d = await r.json();
@@ -587,7 +605,7 @@ async function fetchWiki() {
   } catch (e) { return null; }
 }
 function addWiki(a) {
-  const rule = WIKI_RULES.find(r => r[1].test(a.title || '')); if (!rule) return;
+  const rule = (curReg === 'ee' ? WIKI_RULES_EE : WIKI_RULES).find(r => r[1].test(a.title || '')); if (!rule) return;
   const key = 'wiki' + a.pageid; if (siteSeen.has(key)) return;
   // skip if a dot of another source already sits within ~150 m with the same category colour
   const cat = CATS[rule[0]], here = L.latLng(a.lat, a.lon);
@@ -595,7 +613,7 @@ function addWiki(a) {
   siteSeen.add(key);
   L.circleMarker(here, { radius: rule[0] === 'battle' ? 8 : 7, color: '#fff', weight: 2, fillColor: cat.color, fillOpacity: .95 })
     .bindPopup('<div class="pop"><b>' + esc(a.title) + '</b><br>' + esc(cat.label) +
-      '<br><a href="https://fr.wikipedia.org/?curid=' + encodeURIComponent(a.pageid) + '" target="_blank" rel="noopener">Wikipedia</a></div>')
+      '<br><a href="https://' + wikiLang() + '.wikipedia.org/?curid=' + encodeURIComponent(a.pageid) + '" target="_blank" rel="noopener">Wikipedia</a></div>')
     .addTo(sitesLayer);
 }
 
@@ -673,6 +691,7 @@ function showCad() {
   $('status').textContent = map.getZoom() < 13 ? 'Cadastre on – zoom in closer to see the plots.' : 'Cadastre on.';
 }
 $('cad').onchange = () => {
+  if (curReg === 'ee') { if ($('cad').checked) { eeCad.addTo(map); $('status').textContent = 'Cadastre on – zoom in to see the plots.'; } else map.removeLayer(eeCad); return; }
   if (!$('cad').checked) { if (cadLayer) map.removeLayer(cadLayer); return; }
   if (cadLayer) showCad(); else cadProbe(0);
 };
@@ -719,6 +738,7 @@ async function loadClues() {
   const b = map.getBounds();
   if (cluesLoaded && cluesLoaded.contains(b)) return;
   const q = b.pad(.25);
+  if (curReg === 'ee') return loadCluesEE(q);
   cluesBusy = true; $('status').textContent = 'Reading place names…';
   const res = await Promise.all([fetchNames('BDTOPO_V3:lieu_dit_non_habite', q), fetchNames('BDTOPO_V3:toponymie_lieux_nommes', q)]);
   cluesBusy = false;
@@ -746,7 +766,7 @@ async function goTo() {
   }
   $('status').textContent = 'Searching…';
   try {                                             // addresses, hamlets, lieux-dits (OpenStreetMap search)
-    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=fr&q=' + encodeURIComponent(name));
+    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=fr,ee&q=' + encodeURIComponent(name));
     const d = r.ok ? await r.json() : [];
     if (d.length) return jump(+d[0].lat, +d[0].lon, 15, String(d[0].display_name || name).split(',').slice(0, 3).join(','));
   } catch (e) {}
@@ -871,11 +891,155 @@ async function loadRoman(fromButton) {
   $('status').textContent = n ? n + ' Roman road section(s) – solid: recorded as Roman, dashed: by name only.' : romanEmptyNote();
 }
 $('roman').onclick = () => {
+  if (curReg === 'ee' && !romanOn) { $('status').textContent = 'No Roman roads in Estonia – this layer covers France.'; return; }
   romanOn = !romanOn; $('roman').classList.toggle('on', romanOn);
   if (romanOn) { romanLayer.addTo(map); itinerLayer.addTo(map); $('status').textContent = 'Loading Roman roads…'; loadRoman(true); }
   else { map.removeLayer(romanLayer); map.removeLayer(itinerLayer); $('status').textContent = 'Roman roads hidden.'; }
 };
 map.on('moveend', () => { clearTimeout(romanTimer); romanTimer = setTimeout(() => loadRoman(false), 800); });
+
+/* ====================== ESTONIA ======================
+   When the map is over Estonia the app swaps its sources for the Estonian Land Board (Maa- ja Ruumiamet):
+   aerial photo, LiDAR relief, old maps instead of Cassini, cadastre, and the national heritage register. */
+const EE_WMS = 'https://kaart.maaamet.ee/wms/ajalooline?', EE_ATTR = '© Maa- ja Ruumiamet';
+const inEE = () => { const c = map.getCenter(); return c.lat > 57.4 && c.lat < 59.9 && c.lng > 21.3 && c.lng < 28.4; };
+const eeWmsLayers = [];
+function eeWms(layers, extra) {
+  const l = L.tileLayer.wms(EE_WMS, Object.assign({ layers, format: 'image/png', version: '1.1.1', maxZoom: 19, attribution: EE_ATTR }, extra || {}));
+  eeWmsLayers.push(l); return l;
+}
+const EE_MAPS = [
+  ['yheverstakaart', '1-verst map (1894–1922)'], ['Halduspiir_raster', 'Schmidt / Rücker (19th c.)'],
+  ['kolmeverstakaart', '3-verst map (1866–1915)'], ['kaheverstakaart', '2-verst map (1895–1918)'],
+  ['ew_50T', 'Estonian topo 1:50 000 (1935–39)'], ['ew_25T', 'Estonian topo 1:25 000 (1923–35)'],
+  ['nltopo_vanem_25T', 'Soviet topo 1:25 000 (oldest)'], ['kk1940', 'Cadastral map (1930–44)']
+];
+$('eemap').innerHTML = EE_MAPS.map(m => '<option value="' + m[0] + '">' + m[1] + '</option>').join('');
+const frSat = bases['Satellite'];
+const eeSat = L.tileLayer('https://tiles.maaamet.ee/tm/tms/1.0.0/foto@GMC/{z}/{x}/{y}.png', { tms: true, maxNativeZoom: 18, maxZoom: 19, attribution: EE_ATTR });
+const eeLidar = eeWms('reljeef2020', { format: 'image/jpeg' });
+const eeOld = eeWms(EE_MAPS[0][0], { opacity: .65 });
+const eeCad = eeWms('TOPOYKSUS_6569', { transparent: true, minZoom: 13 });
+$('eemap').onchange = () => { eeOld.setParams({ layers: $('eemap').value }); };
+
+// The Land Board server may not accept the web-map projection: test once and fall back to plain latitude/longitude.
+let eeProbed = false;
+function eeProbe() {
+  if (eeProbed) return; eeProbed = true;
+  const a = L.CRS.EPSG3857.project(L.latLng(59.40, 24.70)), b = L.CRS.EPSG3857.project(L.latLng(59.46, 24.82));
+  const img = new Image();
+  img.onerror = () => {
+    eeWmsLayers.forEach(l => { l.options.crs = L.CRS.EPSG4326; if (map.hasLayer(l)) { map.removeLayer(l); map.addLayer(l); } });
+    if (cassini === eeOld) eeOld.bringToFront();
+    if (currentBase && currentBase.bringToBack) currentBase.bringToBack();
+  };
+  img.src = EE_WMS + 'SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=yheverstakaart&STYLES=&FORMAT=image/png&SRS=EPSG:3857&WIDTH=64&HEIGHT=64&BBOX=' +
+            [a.x, a.y, b.x, b.y].map(n => n.toFixed(0)).join(',');
+}
+function applyRegion() {
+  const reg = inEE() ? 'ee' : 'fr';
+  if (reg === curReg) return;
+  curReg = reg;
+  const cur = $('base').value;
+  bases['Satellite'] = reg === 'ee' ? eeSat : frSat;
+  if (reg === 'ee') bases['LiDAR relief'] = eeLidar; else if (frLidar) bases['LiDAR relief'] = frLidar; else delete bases['LiDAR relief'];
+  refreshBaseList(bases[cur] ? cur : 'Satellite');
+  if (cur === 'Satellite' || cur === 'LiDAR relief') setBase(cur);
+  if (cassini) map.removeLayer(cassini);
+  cassini = reg === 'ee' ? eeOld : cassiniFR;
+  if (cassini) { cassini.setOpacity($('opacity').value / 100); cassini.addTo(map); }
+  $('oldlabel').textContent = reg === 'ee' ? 'Old map' : 'Cassini';
+  $('eemaprow').hidden = reg !== 'ee';
+  $('cad').checked = false; map.removeLayer(eeCad); if (cadLayer) map.removeLayer(cadLayer);
+  sitesLoaded = null; cluesLoaded = null;
+  if (reg === 'ee') { eeProbe(); $('status').textContent = 'Estonia: Land Board aerial photo, LiDAR and old maps (choose the old map under Places & map options).'; }
+}
+map.on('moveend', applyRegion);
+
+/* ----- Estonian national register of cultural monuments (Muinsuskaitseamet), via the open WFS ----- */
+function jsonp(url) {                             // fallback when the server does not allow a direct read
+  return new Promise(ok => {
+    const cb = '__ee' + Date.now() + Math.floor(Math.random() * 1e4), s = document.createElement('script');
+    const done = v => { delete window[cb]; s.remove(); ok(v); };
+    window[cb] = d => done(d); s.onerror = () => done(null);
+    setTimeout(() => { if (window[cb]) done(null); }, 20000);
+    s.src = url + '&outputFormat=text/javascript&format_options=callback:' + cb; document.head.appendChild(s);
+  });
+}
+async function fetchHeritageEE(q) {
+  const base = 'https://gsavalik.envir.ee/geoserver/muinsuskaitse/ows?service=WFS&version=1.1.0&request=GetFeature' +
+               '&typeName=muinsuskaitse:kpo_malestised&srsName=EPSG:4326&maxFeatures=1500';
+  const boxes = [[q.getWest(), q.getSouth(), q.getEast(), q.getNorth()].map(n => n.toFixed(5)).join(',') + ',EPSG:4326',
+                 [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(5)).join(',') + ',urn:ogc:def:crs:EPSG::4326'];
+  let answered = false;
+  for (const box of boxes) {
+    const url = base + '&bbox=' + box; let d = null;
+    try { const r = await fetch(url + '&outputFormat=application/json'); if (r.ok) d = await r.json(); } catch (e) {}
+    if (!d) d = await jsonp(url);
+    if (d && Array.isArray(d.features)) { answered = true; if (d.features.length) return d.features; }
+  }
+  return answered ? [] : null;
+}
+const HER_RULES = [                               // on the monument's name, lower case without accents
+  ['harbour', /sadam|vrakk|lautri|lauter|valgma|laev/],
+  ['battle',  /lahing/],
+  ['milit',   /soja|kaitse|patarei|punker|kasarm|kaevik|suurtuki|kindlus|laskepesa|rannakaitse|vabadusso/],
+  ['castle',  /linnus|linnamag|maalinn|kants|mois|loss/],
+  ['arch',    /kalme|kalmistu|kaabas|asulakoht|ohvri|hiis|hiie|lohukivi|kultusekivi|muist|rauasulatus|peitlei|pollujaan|matmispaik/]
+];
+function addHeritageEE(f) {
+  const pr = f.properties || {}, id = 'her' + (f.id || JSON.stringify(pr).slice(0, 80));
+  if (siteSeen.has(id) || !f.geometry) return;
+  const keys = Object.keys(pr), find = re => keys.find(k => re.test(k) && pr[k] != null && String(pr[k]).trim());
+  const nameKey = find(/^(nimi|nimetus|name)$/i) || find(/nimi|nimetus/i), name = nameKey ? String(pr[nameKey]) : '';
+  const all = plain(keys.map(k => pr[k]).filter(v => typeof v === 'string').join(' | '));
+  const rule = HER_RULES.find(r => r[1].test(plain(name))) || (/arheoloogia/.test(all) ? ['arch'] : /ajaloomalestis/.test(all) ? ['other'] : null);
+  if (!rule) return;                              // plain listed buildings and art objects are left out
+  let xy = firstXY(f.geometry.coordinates); if (!xy || xy.length < 2) return;
+  let lon = xy[0], lat = xy[1]; if (lon > 40) { lon = xy[1]; lat = xy[0]; }
+  siteSeen.add(id);
+  const cat = CATS[rule[0]];
+  const rows = keys.filter(k => pr[k] != null && String(pr[k]).trim() && !/^(bbox|geom|shape)/i.test(k)).slice(0, 8)
+    .map(k => '<small>' + esc(pretty(k)) + ': ' + esc(String(pr[k]).slice(0, 90)) + '</small>').join('<br>');
+  L.circleMarker([lat, lon], { radius: 7, color: '#fff', weight: 2, fillColor: cat.color, fillOpacity: .95 })
+    .bindPopup('<div class="pop"><b>' + esc(name || cat.label) + '</b><br>' + esc(cat.label) + '<br>' + rows +
+               '<br><small>Protected monument – Estonian heritage register</small></div>')
+    .addTo(sitesLayer);
+}
+
+/* ----- Estonian place-name clues (names recorded in OpenStreetMap) ----- */
+const CLUES_EE = [
+  { color: '#8e44ad', why: 'Hillfort or stronghold – often Viking Age or medieval',            re: /linnamag|linnamae|linnus|maalinn|kants|vallimag/ },
+  { color: '#2471a3', why: 'Harbour or boat landing place – old coastal trade and raiding spot', re: /sadam|valgma|lautri|lauter|laeva|viiking/ },
+  { color: '#c0392b', why: 'Battle, army camp or fortification',                                 re: /lahing|soja|kindlus|patarei|kasarm|laagri|rootsi|kahuri/ },
+  { color: '#7b241c', why: 'Ancient burial place',                                               re: /kalme|kalmistu|kaabas|kaapa/ },
+  { color: '#16a085', why: 'Sacred grove or offering place',                                     re: /\bhiie|\bhiis|ohvri/ },
+  { color: '#6c3483', why: 'Manor, castle or monastery land',                                    re: /mois|kloostri|ordu\b|lossi/ },
+  { color: '#d35400', why: 'Old or abandoned settlement',                                        re: /vanakula|asulakoht|kulaase/ }
+];
+async function loadCluesEE(q) {
+  const box = [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(4)).join(',');
+  const words = 'linnamä|linnus|maalinn|kants|vallimä|sadam|valgma|lautri|lauter|laeva|viiking|lahing|sõja|kindlus|patarei|kasarm|laagri|rootsi|kahuri|' +
+                'kalme|kalmistu|kääbas|kääpa|hiie|hiis|ohvri|mõis|kloostri|ordu|lossi|vanaküla|asulakoht|külaase';
+  const query = '[out:json][timeout:25];nwr[!highway][!shop][!amenity][!public_transport][!office]["name"~"' + words + '",i](' + box + ');out center tags 700;';
+  cluesBusy = true; $('status').textContent = 'Reading place names…';
+  const els = await fetchPlaces(query);
+  cluesBusy = false;
+  if (!els) { $('status').textContent = 'Place names could not be loaded – try again in a moment.'; return; }
+  els.forEach(el => {
+    const name = (el.tags || {}).name; if (!name) return;
+    const rule = CLUES_EE.find(c => c.re.test(plain(name))); if (!rule) return;
+    const lat = el.lat != null ? el.lat : el.center && el.center.lat, lon = el.lon != null ? el.lon : el.center && el.center.lon;
+    if (lat == null) return;
+    const key = plain(name) + '|' + lat.toFixed(3) + '|' + lon.toFixed(3); if (clueSeen.has(key)) return;
+    clueSeen.add(key);
+    L.marker([lat, lon], { icon: L.divIcon({ className: '', iconSize: [0, 0], html: '<span class="clue" style="border-color:' + rule.color + '">' + esc(name) + '</span>' }) })
+      .bindPopup('<div class="pop"><b>' + esc(name) + '</b><br>' + esc(rule.why) + '<br><small>A name is only a hint, not proof of a site.</small></div>')
+      .addTo(cluesLayer);
+  });
+  cluesLoaded = q;
+  $('status').textContent = cluesLayer.getLayers().length + ' suggestive name(s) flagged – tap a label.';
+}
 
 /* ---------- Force the latest version (saved trips, finds and places are kept) ---------- */
 $('update').onclick = async () => {
