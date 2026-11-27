@@ -67,6 +67,7 @@
     <button id="sat">Satellite</button>
     <button id="lidar">LiDAR</button>
     <button id="roman">Roman roads</button>
+    <button id="country">Go to Estonia</button>
     <button id="install" hidden>Install app</button>
   </div>
   <div class="row" id="gorow">
@@ -75,7 +76,7 @@
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Places &amp; map options · v17</summary>
+    <summary>Places &amp; map options · v18</summary>
     <div class="row">
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
@@ -88,7 +89,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 17</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 18</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -955,6 +956,14 @@ function applyRegion() {
   if (reg === 'ee') { eeProbe(); $('status').textContent = 'Estonia: Land Board aerial photo, LiDAR and old maps (choose the old map under Places & map options).'; }
 }
 map.on('moveend', applyRegion);
+// One-tap switch between the two countries; remembers where you were in each.
+const lastView = { fr: null, ee: null };
+map.on('moveend', () => { lastView[curReg] = { c: map.getCenter(), z: map.getZoom() }; $('country').textContent = curReg === 'ee' ? 'Go to France' : 'Go to Estonia'; });
+$('country').onclick = () => {
+  const to = curReg === 'ee' ? 'fr' : 'ee', v = lastView[to];
+  follow = false;
+  if (v) map.setView(v.c, v.z); else map.setView(to === 'ee' ? [59.437, 24.7536] : [50.39, 2.03], 12);
+};
 
 /* ----- Estonian national register of cultural monuments (Muinsuskaitseamet), via the open WFS ----- */
 function jsonp(url) {                             // fallback when the server does not allow a direct read
