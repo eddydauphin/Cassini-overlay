@@ -1,0 +1,27 @@
+name: Probe map services
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tools/probe_services.py
+      - .github/workflows/probe-services.yml
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ask each public map service what it answers
+        run: python3 tools/probe_services.py
+      - name: Save the report
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add diag/probe.txt
+          git diff --cached --quiet && echo "No change" && exit 0
+          git commit -m "Update service probe report"
+          git pull --rebase -q
+          git push
