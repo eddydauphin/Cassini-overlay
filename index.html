@@ -76,7 +76,7 @@
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Places &amp; map options · v18</summary>
+    <summary>Places &amp; map options · v19</summary>
     <div class="row">
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
@@ -89,7 +89,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 18</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 19</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -240,7 +240,7 @@ function probe(i) {
   const img = new Image();
   img.onload = () => {
     cassiniFR = L.tileLayer(geopf(layer, format), {
-      maxNativeZoom: 15, maxZoom: 19, opacity: $('opacity').value / 100,
+      maxNativeZoom: 14, maxZoom: 19, opacity: $('opacity').value / 100,
       attribution: 'Carte de Cassini © IGN / BnF'
     });
     if (curReg === 'fr') {
@@ -741,7 +741,7 @@ async function loadClues() {
   const q = b.pad(.25);
   if (curReg === 'ee') return loadCluesEE(q);
   cluesBusy = true; $('status').textContent = 'Reading place names…';
-  const res = await Promise.all([fetchNames('BDTOPO_V3:lieu_dit_non_habite', q), fetchNames('BDTOPO_V3:toponymie_lieux_nommes', q)]);
+  const res = await Promise.all([fetchNames('BDTOPO_V3:lieu_dit_non_habite', q), fetchNames('BDTOPO_V3:toponymie', q)]);
   cluesBusy = false;
   if (!res[0] && !res[1]) { $('status').textContent = 'Place names could not be loaded (IGN name service failed).'; return; }
   const total = (res[0] || []).length + (res[1] || []).length;
@@ -904,39 +904,67 @@ map.on('moveend', () => { clearTimeout(romanTimer); romanTimer = setTimeout(() =
    aerial photo, LiDAR relief, old maps instead of Cassini, cadastre, and the national heritage register. */
 const EE_WMS = 'https://kaart.maaamet.ee/wms/ajalooline?', EE_ATTR = '© Maa- ja Ruumiamet';
 const inEE = () => { const c = map.getCenter(); return c.lat > 57.4 && c.lat < 59.9 && c.lng > 21.3 && c.lng < 28.4; };
-const eeWmsLayers = [];
-function eeWms(layers, extra) {
-  const l = L.tileLayer.wms(EE_WMS, Object.assign({ layers, format: 'image/png', version: '1.1.1', maxZoom: 19, attribution: EE_ATTR }, extra || {}));
-  eeWmsLayers.push(l); return l;
-}
-const EE_MAPS = [
-  ['yheverstakaart', '1-verst map (1894–1922)'], ['Halduspiir_raster', 'Schmidt / Rücker (19th c.)'],
-  ['kolmeverstakaart', '3-verst map (1866–1915)'], ['kaheverstakaart', '2-verst map (1895–1918)'],
+/* The Land Board's historical-map server only speaks the Estonian national grid (L-EST97, EPSG:3301).
+   This layer asks for each map tile's footprint in that grid and warps the picture onto the web-map tile. */
+const lest = (() => {                             // Lambert conformal conic, GRS80, official L-EST97 parameters
+  const A = 6378137, F = 1 / 298.257222101, E = Math.sqrt(2 * F - F * F), R = Math.PI / 180;
+  const m = p => Math.cos(p) / Math.sqrt(1 - E * E * Math.sin(p) ** 2);
+  const t = p => Math.tan(Math.PI / 4 - p / 2) / Math.pow((1 - E * Math.sin(p)) / (1 + E * Math.sin(p)), E / 2);
+  const p1 = 58 * R, p2 = (59 + 20 / 60) * R, p0 = 57.51755393055556 * R, l0 = 24 * R;
+  const n = (Math.log(m(p1)) - Math.log(m(p2))) / (Math.log(t(p1)) - Math.log(t(p2)));
+  const Fc = m(p1) / (n * Math.pow(t(p1), n)), rho0 = A * Fc * Math.pow(t(p0), n);
+  return (lat, lng) => {
+    const rho = A * Fc * Math.pow(t(lat * R), n), th = n * (lng * R - l0);
+    return [500000 + rho * Math.sin(th), 6375000 + rho0 - rho * Math.cos(th)];   // [easting, northing]
+  };
+})();
+const EELayer = L.GridLayer.extend({
+  options: { layers: '', format: 'image/png', transparent: false, maxZoom: 19, attribution: EE_ATTR },
+  setLayers(name) { this.options.layers = name; this.redraw(); },
+  createTile(coords, done) {
+    const size = this.getTileSize(), cv = document.createElement('canvas');
+    cv.width = size.x; cv.height = size.y;
+    const ll = (x, y) => this._map.unproject(L.point(x, y), coords.z);
+    const x0 = coords.x * size.x, y0 = coords.y * size.y;
+    const nw = ll(x0, y0), ne = ll(x0 + size.x, y0), sw = ll(x0, y0 + size.y), se = ll(x0 + size.x, y0 + size.y);
+    const P = [nw, ne, sw, se].map(c => lest(c.lat, c.lng));
+    const minE = Math.min(...P.map(p => p[0])), maxE = Math.max(...P.map(p => p[0]));
+    const minN = Math.min(...P.map(p => p[1])), maxN = Math.max(...P.map(p => p[1]));
+    const w = 320, hgt = Math.max(16, Math.round(w * (maxN - minN) / (maxE - minE)));
+    const px = p => [(p[0] - minE) / (maxE - minE) * w, (maxN - p[1]) / (maxN - minN) * hgt];
+    const s = P.map(px), ux = s[1][0] - s[0][0], uy = s[1][1] - s[0][1], vx = s[2][0] - s[0][0], vy = s[2][1] - s[0][1];
+    const det = ux * vy - vx * uy, img = new Image();
+    img.onload = () => {
+      try {
+        const ctx = cv.getContext('2d');
+        const a = size.x * vy / det, c = -size.x * vx / det, b = -size.y * uy / det, d = size.y * ux / det;
+        ctx.setTransform(a, b, c, d, -(a * s[0][0] + c * s[0][1]), -(b * s[0][0] + d * s[0][1]));
+        ctx.drawImage(img, 0, 0, w, hgt);
+      } catch (e) {}
+      done(null, cv);
+    };
+    img.onerror = () => done(new Error('tile'), cv);
+    img.src = EE_WMS + 'SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&STYLES=&SRS=EPSG:3301&LAYERS=' + encodeURIComponent(this.options.layers) +
+              '&FORMAT=' + this.options.format + (this.options.transparent ? '&TRANSPARENT=TRUE' : '') +
+              '&WIDTH=' + w + '&HEIGHT=' + hgt + '&BBOX=' + [minE, minN, maxE, maxN].map(v => v.toFixed(2)).join(',');
+    return cv;
+  }
+});
+const eeLayer = (layers, extra) => new EELayer(Object.assign({ layers }, extra || {}));
+const EE_MAPS = [                                 // layer names and scale ranges checked against the live service
+  ['yheverstakaart_alt', '1-verst map (1894–1922)'], ['kolmeverstakaart_alt', '3-verst map (1866–1915)'],
+  ['Halduspiir_raster', 'Schmidt / Rücker (19th c.) – best zoomed out'],
   ['ew_50T', 'Estonian topo 1:50 000 (1935–39)'], ['ew_25T', 'Estonian topo 1:25 000 (1923–35)'],
-  ['nltopo_vanem_25T', 'Soviet topo 1:25 000 (oldest)'], ['kk1940', 'Cadastral map (1930–44)']
+  ['nltopo_vanem_25T_alt', 'Soviet topo 1:25 000 (oldest)'], ['kk1940', 'Cadastral map (1930–44)']
 ];
 $('eemap').innerHTML = EE_MAPS.map(m => '<option value="' + m[0] + '">' + m[1] + '</option>').join('');
 const frSat = bases['Satellite'];
 const eeSat = L.tileLayer('https://tiles.maaamet.ee/tm/tms/1.0.0/foto@GMC/{z}/{x}/{y}.png', { tms: true, maxNativeZoom: 18, maxZoom: 19, attribution: EE_ATTR });
-const eeLidar = eeWms('reljeef2020', { format: 'image/jpeg' });
-const eeOld = eeWms(EE_MAPS[0][0], { opacity: .65 });
-const eeCad = eeWms('TOPOYKSUS_6569', { transparent: true, minZoom: 13 });
-$('eemap').onchange = () => { eeOld.setParams({ layers: $('eemap').value }); };
-
-// The Land Board server may not accept the web-map projection: test once and fall back to plain latitude/longitude.
-let eeProbed = false;
-function eeProbe() {
-  if (eeProbed) return; eeProbed = true;
-  const a = L.CRS.EPSG3857.project(L.latLng(59.40, 24.70)), b = L.CRS.EPSG3857.project(L.latLng(59.46, 24.82));
-  const img = new Image();
-  img.onerror = () => {
-    eeWmsLayers.forEach(l => { l.options.crs = L.CRS.EPSG4326; if (map.hasLayer(l)) { map.removeLayer(l); map.addLayer(l); } });
-    if (cassini === eeOld) eeOld.bringToFront();
-    if (currentBase && currentBase.bringToBack) currentBase.bringToBack();
-  };
-  img.src = EE_WMS + 'SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=yheverstakaart&STYLES=&FORMAT=image/png&SRS=EPSG:3857&WIDTH=64&HEIGHT=64&BBOX=' +
-            [a.x, a.y, b.x, b.y].map(n => n.toFixed(0)).join(',');
-}
+const eeLidar = eeLayer('reljeef2020');
+const eeOld = eeLayer(EE_MAPS[0][0], { opacity: .65 });
+const eeCad = eeLayer('TOPOYKSUS_6569', { transparent: true, minZoom: 13 });
+$('eemap').onchange = () => { eeOld.setLayers($('eemap').value); };
+function eeProbe() {}
 function applyRegion() {
   const reg = inEE() ? 'ee' : 'fr';
   if (reg === curReg) return;
@@ -966,53 +994,37 @@ $('country').onclick = () => {
 };
 
 /* ----- Estonian national register of cultural monuments (Muinsuskaitseamet), via the open WFS ----- */
-function jsonp(url) {                             // fallback when the server does not allow a direct read
-  return new Promise(ok => {
-    const cb = '__ee' + Date.now() + Math.floor(Math.random() * 1e4), s = document.createElement('script');
-    const done = v => { delete window[cb]; s.remove(); ok(v); };
-    window[cb] = d => done(d); s.onerror = () => done(null);
-    setTimeout(() => { if (window[cb]) done(null); }, 20000);
-    s.src = url + '&outputFormat=text/javascript&format_options=callback:' + cb; document.head.appendChild(s);
-  });
-}
-async function fetchHeritageEE(q) {
-  const base = 'https://gsavalik.envir.ee/geoserver/muinsuskaitse/ows?service=WFS&version=1.1.0&request=GetFeature' +
-               '&typeName=muinsuskaitse:kpo_malestised&srsName=EPSG:4326&maxFeatures=1500';
-  const boxes = [[q.getWest(), q.getSouth(), q.getEast(), q.getNorth()].map(n => n.toFixed(5)).join(',') + ',EPSG:4326',
-                 [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(5)).join(',') + ',urn:ogc:def:crs:EPSG::4326'];
-  let answered = false;
-  for (const box of boxes) {
-    const url = base + '&bbox=' + box; let d = null;
-    try { const r = await fetch(url + '&outputFormat=application/json'); if (r.ok) d = await r.json(); } catch (e) {}
-    if (!d) d = await jsonp(url);
-    if (d && Array.isArray(d.features)) { answered = true; if (d.features.length) return d.features; }
-  }
-  return answered ? [] : null;
+async function fetchHeritageEE(q) {             // archaeological and historical monuments, plus castles and manors
+  const cql = "BBOX(geom," + [q.getWest(), q.getSouth(), q.getEast(), q.getNorth()].map(n => n.toFixed(5)).join(',') + ",'EPSG:4326') AND " +
+              "(tyyp <> 'KPO_LIIK_EHITISMALESTIS' OR nimi ILIKE '%linnus%' OR nimi ILIKE '%kindlus%' OR nimi ILIKE '%mõisa peahoone%' OR nimi ILIKE '%patarei%')";
+  try {
+    const r = await fetch('https://gsavalik.envir.ee/geoserver/muinsuskaitse/ows?service=WFS&version=1.1.0&request=GetFeature' +
+      '&typeName=muinsuskaitse:kpo_malestised&srsName=EPSG:4326&maxFeatures=2000&outputFormat=application/json&cql_filter=' + encodeURIComponent(cql));
+    if (!r.ok) return null;
+    const d = await r.json();
+    return Array.isArray(d.features) ? d.features : null;
+  } catch (e) { return null; }
 }
 const HER_RULES = [                               // on the monument's name, lower case without accents
   ['harbour', /sadam|vrakk|lautri|lauter|valgma|laev/],
   ['battle',  /lahing/],
   ['milit',   /soja|kaitse|patarei|punker|kasarm|kaevik|suurtuki|kindlus|laskepesa|rannakaitse|vabadusso/],
-  ['castle',  /linnus|linnamag|maalinn|kants|mois|loss/],
+  ['castle',  /linnus|linnamag|maalinn|kants|mois|loss|kindlus/],
   ['arch',    /kalme|kalmistu|kaabas|asulakoht|ohvri|hiis|hiie|lohukivi|kultusekivi|muist|rauasulatus|peitlei|pollujaan|matmispaik/]
 ];
 function addHeritageEE(f) {
-  const pr = f.properties || {}, id = 'her' + (f.id || JSON.stringify(pr).slice(0, 80));
+  const pr = f.properties || {}, id = 'her' + (f.id || pr.id);
   if (siteSeen.has(id) || !f.geometry) return;
-  const keys = Object.keys(pr), find = re => keys.find(k => re.test(k) && pr[k] != null && String(pr[k]).trim());
-  const nameKey = find(/^(nimi|nimetus|name)$/i) || find(/nimi|nimetus/i), name = nameKey ? String(pr[nameKey]) : '';
-  const all = plain(keys.map(k => pr[k]).filter(v => typeof v === 'string').join(' | '));
-  const rule = HER_RULES.find(r => r[1].test(plain(name))) || (/arheoloogia/.test(all) ? ['arch'] : /ajaloomalestis/.test(all) ? ['other'] : null);
-  if (!rule) return;                              // plain listed buildings and art objects are left out
-  let xy = firstXY(f.geometry.coordinates); if (!xy || xy.length < 2) return;
-  let lon = xy[0], lat = xy[1]; if (lon > 40) { lon = xy[1]; lat = xy[0]; }
+  const name = String(pr.nimi || ''), isArch = /ARHEOLOOGIA/.test(pr.tyyp || '');
+  const rule = HER_RULES.find(r => r[1].test(plain(name))) || (isArch ? ['arch'] : null);
+  if (!rule) return;                              // graves of people, memorial plaques, art objects are left out
+  const xy = firstXY(f.geometry.coordinates); if (!xy || xy.length < 2) return;
   siteSeen.add(id);
-  const cat = CATS[rule[0]];
-  const rows = keys.filter(k => pr[k] != null && String(pr[k]).trim() && !/^(bbox|geom|shape)/i.test(k)).slice(0, 8)
-    .map(k => '<small>' + esc(pretty(k)) + ': ' + esc(String(pr[k]).slice(0, 90)) + '</small>').join('<br>');
-  L.circleMarker([lat, lon], { radius: 7, color: '#fff', weight: 2, fillColor: cat.color, fillOpacity: .95 })
-    .bindPopup('<div class="pop"><b>' + esc(name || cat.label) + '</b><br>' + esc(cat.label) + '<br>' + rows +
-               '<br><small>Protected monument – Estonian heritage register</small></div>')
+  const cat = CATS[rule[0]], reg = /^\d+$/.test(String(pr.vk_registrinumber || '')) ? pr.vk_registrinumber : '';
+  L.circleMarker([xy[1], xy[0]], { radius: 7, color: '#fff', weight: 2, fillColor: cat.color, fillOpacity: .95 })
+    .bindPopup('<div class="pop"><b>' + esc(name || cat.label) + '</b><br>' + esc(pr.tyyp_nimi || cat.label) +
+      (reg ? '<br><a href="https://register.muinas.ee/public.php?menuID=monument&action=view&id=' + reg + '" target="_blank" rel="noopener">Register entry ' + reg + '</a>' : '') +
+      '<br><small>Protected monument – no detecting here</small></div>')
     .addTo(sitesLayer);
 }
 

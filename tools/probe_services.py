@@ -185,6 +185,28 @@ def main():
     head("geopf wfs CORS check", "https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=BDTOPO_V3:lieu_dit_non_habite"
          "&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326&COUNT=1&BBOX=50.30,1.95,50.47,2.12,urn:ogc:def:crs:EPSG::4326")
 
+    line()
+    line("# Round 3: exact requests the app sends over Estonia")
+    cql = ("BBOX(geom,24.70056,59.38108,24.80658,59.49280,'EPSG:4326') AND (tyyp <> 'KPO_LIIK_EHITISMALESTIS' OR nimi ILIKE '%linnus%' "
+           "OR nimi ILIKE '%kindlus%' OR nimi ILIKE '%mõisa peahoone%' OR nimi ILIKE '%patarei%')")
+    st, h, b = head("heritage app query", "https://gsavalik.envir.ee/geoserver/muinsuskaitse/ows?service=WFS&version=1.1.0&request=GetFeature"
+                    "&typeName=muinsuskaitse:kpo_malestised&srsName=EPSG:4326&maxFeatures=2000&outputFormat=application/json&cql_filter=" + urllib.parse.quote(cql))
+    try:
+        fs = json.loads(b).get("features", [])
+        line("   features: %d ; sample: %s" % (len(fs), " | ".join(str(f["properties"].get("nimi")) for f in fs[:14])))
+    except Exception as e:  # noqa
+        line("   not JSON: %s" % e)
+    for layer, extra in (("reljeef2020", ""), ("yheverstakaart_alt", ""), ("TOPOYKSUS_6569", "&TRANSPARENT=TRUE")):
+        head("app tile " + layer, "https://kaart.maaamet.ee/wms/ajalooline?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&STYLES=&SRS=EPSG:3301&LAYERS=" + layer +
+             "&FORMAT=image/png" + extra + "&WIDTH=320&HEIGHT=319&BBOX=542682.00,6589002.00,542840.00,6589159.00")
+    st, h, b = head("geopf wfs toponymie", "https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=BDTOPO_V3:toponymie"
+                    "&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326&COUNT=3&BBOX=50.30,1.95,50.47,2.12,urn:ogc:def:crs:EPSG::4326")
+    try:
+        for f in json.loads(b).get("features", [])[:2]:
+            line("   geom=%s props=%s" % (json.dumps(f.get("geometry"))[:100], json.dumps(f.get("properties"), ensure_ascii=False)[:420]))
+    except Exception as e:  # noqa
+        line("   not JSON: %s" % e)
+
     os.makedirs("diag", exist_ok=True)
     with open("diag/probe.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(OUT) + "\n")
