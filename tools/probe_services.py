@@ -30,7 +30,7 @@ def line(s=""):
 def head(title, url):
     st, h, b = get(url)
     ct = h.get("Content-Type", "?")
-    cors = h.get("Access-Control-Allow-Origin", "-")
+    cors = next((v for k, v in h.items() if k.lower() == "access-control-allow-origin"), "-")
     text = ""
     if not ct.startswith("image"):
         text = b[:400].decode("utf-8", "replace").replace("\n", " ")
@@ -141,6 +141,49 @@ def main():
               '"Point(1.9 50.25)"^^geo:wktLiteral; wikibase:cornerNorthEast "Point(2.3 50.55)"^^geo:wktLiteral. } VALUES ?cls { wd:Q178561 wd:Q188055 } '
               '?item wdt:P31/wdt:P279* ?cls. SERVICE wikibase:label { bd:serviceParam wikibase:language "en,fr" } } LIMIT 20')
     head("wikidata battles", "https://query.wikidata.org/sparql?format=json&query=" + urllib.parse.quote(sparql))
+
+    line()
+    line("# Round 2: Estonian scale limits, heritage filter, French place-name types")
+    st, h, b = get("https://kaart.maaamet.ee/wms/ajalooline?service=WMS&version=1.1.1&request=GetCapabilities", 30_000_000)
+    x = b.decode("utf-8", "replace")
+    for name in ("yheverstakaart", "yheverstakaart_alt", "kolmeverstakaart", "kolmeverstakaart_alt", "kaheverstakaart", "Halduspiir_raster",
+                 "ew_50T", "ew_25T", "ew_200T", "nltopo_vanem_25T", "nltopo_vanem_25T_alt", "nltopo_vanem_50T", "kk1940", "reljeef2020", "TOPOYKSUS_6569"):
+        m = re.search(r"<Layer[^>]*>\s*<Name>%s</Name>.*?</Layer>" % re.escape(name), x, re.S)
+        hint = re.search(r"<ScaleHint[^>]*/>", m.group(0)) if m else None
+        line("   %-24s %s" % (name, hint.group(0) if hint else ("no ScaleHint" if m else "NOT FOUND")))
+    # same 256px image at four ground resolutions around Tallinn (EPSG:3301): 2, 5, 12, 40 m per pixel
+    for layer in ("yheverstakaart", "yheverstakaart_alt", "yheverstakaart_alt,yheverstakaart", "kolmeverstakaart", "kolmeverstakaart_alt",
+                  "Halduspiir_raster", "ew_50T", "ew_25T", "nltopo_vanem_25T", "nltopo_vanem_25T_alt", "kk1940", "reljeef2020", "TOPOYKSUS_6569"):
+        sizes = []
+        for res in (2, 5, 12, 40):
+            half = res * 128
+            st, h, b = get("https://kaart.maaamet.ee/wms/ajalooline?SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&LAYERS=%s&STYLES=&FORMAT=image/png"
+                           "&SRS=EPSG:3301&WIDTH=256&HEIGHT=256&BBOX=%d,%d,%d,%d" % (layer, 552000 - half, 6580000 - half, 552000 + half, 6580000 + half))
+            ct = next((v for k, v in h.items() if k.lower() == "content-type"), "?")
+            sizes.append("%sm/px:%s%d" % (res, "" if ct.startswith("image") else "ERR ", len(b)))
+        line("   %-36s %s" % (layer, "  ".join(sizes)))
+    cql = "BBOX(geom,24.2,59.2,25.4,59.7,'EPSG:4326') AND tyyp <> 'KPO_LIIK_EHITISMALESTIS'"
+    st, h, b = head("heritage cql non-buildings", "https://gsavalik.envir.ee/geoserver/muinsuskaitse/ows?service=WFS&version=1.1.0&request=GetFeature"
+                    "&typeName=muinsuskaitse:kpo_malestised&srsName=EPSG:4326&maxFeatures=400&outputFormat=application/json&cql_filter=" + urllib.parse.quote(cql))
+    try:
+        d = json.loads(b)
+        fs = d.get("features", [])
+        line("   features: %d" % len(fs))
+        kinds = {}
+        for f in fs:
+            k = (f["properties"].get("tyyp"), f["properties"].get("tyyp_nimi"), (f.get("geometry") or {}).get("type"))
+            kinds[k] = kinds.get(k, 0) + 1
+        line("   kinds: %s" % kinds)
+        for f in fs[:12]:
+            line("   - %s | %s" % (f["properties"].get("tyyp_nimi"), f["properties"].get("nimi")))
+    except Exception as e:  # noqa
+        line("   not JSON: %s" % e)
+    st, h, b = get("https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetCapabilities", 60_000_000)
+    x = b.decode("utf-8", "replace")
+    names = re.findall(r"<Name>(BDTOPO_V3:[^<]+)</Name>", x)
+    line("   BDTOPO_V3 types with topony/lieu/zone/detail: " + " ".join(n for n in names if re.search(r"topony|lieu|zone_d|detail|construction_p", n)))
+    head("geopf wfs CORS check", "https://data.geopf.fr/wfs/ows?SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=BDTOPO_V3:lieu_dit_non_habite"
+         "&OUTPUTFORMAT=application/json&SRSNAME=EPSG:4326&COUNT=1&BBOX=50.30,1.95,50.47,2.12,urn:ogc:def:crs:EPSG::4326")
 
     os.makedirs("diag", exist_ok=True)
     with open("diag/probe.txt", "w", encoding="utf-8") as f:
