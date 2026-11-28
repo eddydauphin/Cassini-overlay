@@ -76,7 +76,7 @@
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Places &amp; map options · v20</summary>
+    <summary>Places &amp; map options · v21</summary>
     <div class="row">
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
@@ -89,7 +89,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 20</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 21</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -508,8 +508,9 @@ function addSite(el) {
   const key = el.type + el.id; if (siteSeen.has(key)) return;
   const lat = el.lat != null ? el.lat : el.center && el.center.lat, lon = el.lon != null ? el.lon : el.center && el.center.lon;
   if (lat == null || lon == null) return;
-  siteSeen.add(key);
   const t = el.tags || {}, cat = CATS[siteCat(t)];
+  if (nearSame(L.latLng(lat, lon), cat.color, 120)) return;   // already shown from an official register
+  siteSeen.add(key);
   const kind = [t.historic || t.military || t['abandoned:military'], t.castle_type, t.site_type, t.fortification_type, t.bunker_type, t.ruins].filter(Boolean).map(pretty);
   const period = [t['historic:civilization'], t['historic:period'], t.start_date].filter(Boolean).map(pretty);
   let link = '';
@@ -525,6 +526,32 @@ function addSite(el) {
     .addTo(sitesLayer);
 }
 let sitesPending = false;
+/* France: protected monuments from the Ministry of Culture register (base Mérimée), shipped with the app as monuments-fr.json */
+let monumentsFR = null, monumentsTried = false;
+async function fetchMonumentsFR(q) {
+  if (!monumentsTried) {
+    monumentsTried = true;
+    try { const r = await fetch('monuments-fr.json'); if (r.ok) { const d = await r.json(); if (Array.isArray(d.sites)) monumentsFR = d.sites; } } catch (e) {}
+    if (!monumentsFR) monumentsTried = false;      // try again next time
+  }
+  if (!monumentsFR) return null;
+  const s = q.getSouth(), n = q.getNorth(), w = q.getWest(), e = q.getEast();
+  return monumentsFR.filter(m => m.y >= s && m.y <= n && m.x >= w && m.x <= e).slice(0, 1500);
+}
+const nearSame = (latlng, color, metres) => sitesLayer.getLayers().some(l => l.options.fillColor === color && map.distance(l.getLatLng(), latlng) < metres);
+function addMonumentFR(m) {
+  const id = 'mh' + m.r; if (siteSeen.has(id)) return;
+  siteSeen.add(id);
+  const cat0 = CATS[m.k] || CATS.other, here = L.latLng(m.y, m.x);   // the register entry replaces a volunteer-mapped dot of the same place
+  sitesLayer.getLayers().filter(l => !l.options.mh && l.options.fillColor === cat0.color && map.distance(l.getLatLng(), here) < 120).forEach(l => sitesLayer.removeLayer(l));
+  const cat = cat0, ref = /^[A-Z]{2}[0-9A-Z]+$/.test(m.r || '') ? m.r : '';
+  L.circleMarker([m.y, m.x], { radius: 7, color: '#fff', weight: 2, fillColor: cat.color, fillOpacity: .95, mh: true })
+    .bindPopup('<div class="pop"><b>' + esc(m.n || cat.label) + '</b><br>' + esc([m.d, m.c].filter(Boolean).join(' · ')) +
+      (m.s ? '<br>' + esc(m.s.replace(/;/g, ', ')) : '') + (m.p ? '<br><small>' + esc(m.p) + '</small>' : '') +
+      (ref ? '<br><a href="https://pop.culture.gouv.fr/notice/merimee/' + ref + '" target="_blank" rel="noopener">Open the official record ' + ref + '</a>' : '') +
+      '<br><small>Protected monument – no detecting here</small></div>')
+    .addTo(sitesLayer);
+}
 function aroundView(minKm) {                     // the screen plus a margin, never less than minKm across
   const b = map.getBounds().pad(.3), c = b.getCenter(), dLat = minKm / 2 / 111, dLng = dLat / Math.cos(c.lat * Math.PI / 180);
   return L.latLngBounds([Math.min(b.getSouth(), c.lat - dLat), Math.min(b.getWest(), c.lng - dLng)],
@@ -559,6 +586,7 @@ function loadSites() {
   };
   const placesP = fetchPlaces(query);
   if (curReg === 'ee') run('Estonian heritage register', fetchHeritageEE(q), addHeritageEE);
+  else run('French monuments register', fetchMonumentsFR(q), addMonumentFR);
   run('OpenStreetMap', placesP, addSite);
   run('Wikidata', fetchBattles(q), addBattle);
   // Wikipedia goes last so it only fills gaps, but does not wait more than 6 s for OpenStreetMap

@@ -13,10 +13,11 @@ RULES = [  # (category, regex on the accent-free lower-case denomination + title
     ("battle", r"champ de bataille|lieu de bataille"),
     ("arch", r"site archeologique|dolmen|menhir|tumulus|oppidum|allee couverte|cromlech|polissoir|necropole|grotte|abri sous roche|eperon barre"
              r"|borne milliaire|fanum|villa\b|thermes|amphitheatre|theatre antique|aqueduc|voie romaine|voie antique|camp romain|camp protohistorique"
-             r"|camp prehistorique|enceinte prehistorique|enceinte protohistorique|cimetiere merovingien|sarcophage|gallo-romain|gallo romain|vestiges antiques|pierre a cupules|megalith"),
+             r"|camp\b|camp prehistorique|enceinte prehistorique|enceinte protohistorique|cimetiere merovingien|sarcophage|gallo-romain|gallo romain|vestiges antiques|pierre a cupules|megalith"),
+    ("castle", r"chateau fort|maison forte|motte"),
     ("milit", r"\bfort\b|fortin|citadelle|batterie|blockhaus|casemate|redoute|ouvrage fortifie|ouvrage militaire|poudriere|arsenal|bunker|base de lancement"
               r"|ligne fortifiee|caserne|camp militaire|camp retranche|tranchee|abri militaire|corps de garde|lunette|bastion"),
-    ("castle", r"chateau|manoir|motte|donjon|maison forte|enceinte|rempart|fortification|porte de ville|tour\b|castrum|bastide|ferme fortifiee|gentilhommiere"),
+    ("castle", r"edifice fortifie|chateau|manoir|motte|donjon|maison forte|enceinte|rempart|fortification|porte de ville|tour\b|castrum|bastide|ferme fortifiee|gentilhommiere"),
     ("other", r"abbaye|prieure|commanderie|chartreuse|couvent|monastere|ermitage|leproserie|maladrerie|moulin|forge|templier|hopital|hospice|ruines|vestiges"),
 ]
 
