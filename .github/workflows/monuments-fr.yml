@@ -1,0 +1,30 @@
+name: Update French monuments data
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - tools/build_monuments_fr.py
+      - .github/workflows/monuments-fr.yml
+  schedule:
+    - cron: "41 3 2 * *"
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the monuments extract from the Ministry of Culture open data
+        run: python3 tools/build_monuments_fr.py
+      - name: Commit if changed
+        run: |
+          ls -la monuments-fr.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add monuments-fr.json
+          git diff --cached --quiet && echo "No change" && exit 0
+          git commit -m "Update French monuments data (Mérimée)"
+          git pull --rebase -q
+          git push
