@@ -4,7 +4,7 @@
 published on data.gouv.fr. Keeps the kinds of monuments useful for field history
 (castles, mottes, forts, archaeological sites, abbeys, mills...) and drops ordinary buildings.
 """
-import json, re, sys, unicodedata, urllib.request
+import csv, io, json, re, sys, unicodedata, urllib.request
 
 DATASET = "https://www.data.gouv.fr/api/1/datasets/immeubles-proteges-au-titre-des-monuments-historiques-2/"
 OUT = "monuments-fr.json"
@@ -26,72 +26,57 @@ def plain(s):
     return "".join(c for c in s if unicodedata.category(c) != "Mn").replace("-", " ").replace("’", "'")
 
 
-def get_json(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "cassini-overlay build script"})
-    with urllib.request.urlopen(req, timeout=900) as r:
-        return json.loads(r.read().decode("utf-8"))
-
-
-def first(props, patterns):
-    for pat in patterns:
-        for k, v in props.items():
-            if re.search(pat, k, re.I) and v not in (None, "", []):
-                if isinstance(v, list):
-                    v = ", ".join(str(x) for x in v)
-                return str(v).strip()
-    return ""
-
-
 def main():
-    meta = get_json(DATASET)
-    res = [r for r in meta.get("resources", []) if "geojson" in (str(r.get("format")) + str(r.get("title")) + str(r.get("url"))).lower()]
+    meta = json.loads(urllib.request.urlopen(urllib.request.Request(DATASET, headers={"User-Agent": "cassini-overlay build script"}), timeout=120).read())
+    res = [r for r in meta.get("resources", []) if "csv" in (str(r.get("format")) + str(r.get("title"))).lower()]
     if not res:
-        sys.exit("No GeoJSON resource found: %s" % [(r.get("title"), r.get("format")) for r in meta.get("resources", [])])
-    url = res[0].get("latest") or res[0]["url"]
+        sys.exit("No CSV resource found: %s" % [(r.get("title"), r.get("format")) for r in meta.get("resources", [])])
+    url = res[0]["url"]
     print("downloading", res[0].get("title"), url, res[0].get("filesize"))
-    data = get_json(url)
-    feats = data.get("features", [])
-    keys, out, cats, nogeo, denoms = {}, [], {}, 0, {}
-    for f in feats:
-        p = f.get("properties") or {}
-        for k in p:
-            keys[k] = keys.get(k, 0) + 1
-        g = f.get("geometry") or {}
-        c = g.get("coordinates")
-        lon = lat = None
-        if g.get("type") == "Point" and isinstance(c, list) and len(c) >= 2:
-            lon, lat = c[0], c[1]
-        else:
-            w = first(p, [r"wgs84", r"coordonnees", r"geoloc", r"geo_point"])
-            m = re.match(r"\s*\[?\s*(-?\d+\.\d+)\s*[,; ]\s*(-?\d+\.\d+)", w)
-            if m:
-                lat, lon = float(m.group(1)), float(m.group(2))
-        denom = first(p, [r"^denomination"])
-        title = first(p, [r"titre_editorial", r"^titre", r"appellation"])
-        denoms[denom[:40]] = denoms.get(denom[:40], 0) + 1
-        if lat is None or not (41 < lat < 51.6 and -5.6 < lon < 10):
-            nogeo += 1
-            continue
-        text = plain(denom + " | " + title)
-        cat = next((c for c, rx in RULES if re.search(rx, text)), None)
-        if not cat:
-            continue
-        if cat in ("castle", "other") and re.search(r"^(eglise|maison|hotel|immeuble|chapelle)\b", plain(denom)) and not re.search(r"chateau|manoir|motte|abbaye|prieure|commanderie", plain(denom)):
-            continue
-        ref = first(p, [r"^reference$", r"^ref$", r"reference"])
-        out.append({"r": ref, "n": (title or denom)[:110], "d": denom[:60], "k": cat,
-                    "c": first(p, [r"^commune_forme_index", r"^commune"])[:40],
-                    "s": first(p, [r"siecle.*principale", r"^siecle", r"datation"])[:60],
-                    "p": first(p, [r"typologie_de_la_protection", r"nature_de_la_protection", r"protection"])[:60],
-                    "y": round(lat, 5), "x": round(lon, 5)})
-        cats[cat] = cats.get(cat, 0) + 1
+    csv.field_size_limit(50_000_000)
+    req = urllib.request.Request(url, headers={"User-Agent": "cassini-overlay build script"})
+    out, cats, nogeo, denoms, total, coord_samples = [], {}, 0, {}, 0, []
+    with urllib.request.urlopen(req, timeout=900) as resp:
+        rows = csv.DictReader(io.TextIOWrapper(resp, encoding="utf-8", newline=""), delimiter="|", quotechar='"')
+        for p in rows:
+            total += 1
+            g = lambda k: (p.get(k) or "").strip()
+            denom, title = g("Denomination_de_l_edifice"), g("Titre_editorial_de_la_notice")
+            for d in denom.split(";"):
+                d = d.strip()[:40]
+                denoms[d] = denoms.get(d, 0) + 1
+            w = g("coordonnees_au_format_WGS84")
+            if w and len(coord_samples) < 4:
+                coord_samples.append(w)
+            m = re.match(r"\s*\[?\s*(-?\d+(?:\.\d+)?)\s*[,; ]\s*(-?\d+(?:\.\d+)?)", w)
+            if not m:
+                nogeo += 1
+                continue
+            lat, lon = float(m.group(1)), float(m.group(2))
+            if not (41 < lat < 51.6 and -5.6 < lon < 10):
+                if 41 < lon < 51.6 and -5.6 < lat < 10:
+                    lat, lon = lon, lat
+                else:
+                    nogeo += 1
+                    continue
+            pd = plain(denom)
+            cat = next((c for c, rx in RULES if re.search(rx, pd)), None) or next((c for c, rx in RULES if re.search(rx, plain(title))), None)
+            if not cat:
+                continue
+            if cat in ("castle", "other") and re.search(r"^(eglise|maison|hotel|immeuble|chapelle|presbytere|cathedrale)\b", pd) \
+                    and not re.search(r"chateau|manoir|motte|abbaye|prieure|commanderie", pd):
+                continue
+            out.append({"r": g("Reference"), "n": (title or denom)[:110], "d": denom[:60], "k": cat,
+                        "c": (g("Commune_forme_editoriale") or g("Commune_forme_index"))[:40],
+                        "s": g("Siecle_de_la_campagne_principale_de_construction")[:60],
+                        "p": g("Date_et_typologie_de_la_protection")[:70],
+                        "y": round(lat, 5), "x": round(lon, 5)})
+            cats[cat] = cats.get(cat, 0) + 1
     if len(out) < 1000:
-        print("property keys:", sorted(keys))
-        sys.exit("Only %d monuments kept out of %d - field names may have changed" % (len(out), len(feats)))
+        sys.exit("Only %d monuments kept out of %d (no position: %d) - format may have changed; coords like %s" % (len(out), total, nogeo, coord_samples))
     info = {"source": "Ministère de la Culture, base Mérimée (Monuments historiques), Licence Ouverte 2.0",
-            "read": len(feats), "kept": len(out), "without_position": nogeo, "categories": cats,
-            "property_keys": sorted(keys), "top_denominations": sorted(denoms.items(), key=lambda kv: -kv[1])[:60],
-            "samples": out[:6]}
+            "read": total, "kept": len(out), "without_position": nogeo, "categories": cats, "coord_samples": coord_samples,
+            "top_denominations": sorted(denoms.items(), key=lambda kv: -kv[1])[:80], "samples": out[:6]}
     with open(OUT, "w", encoding="utf-8") as fh:
         json.dump({"meta": info, "sites": out}, fh, ensure_ascii=False, separators=(",", ":"))
     print(json.dumps(info, ensure_ascii=False, indent=1)[:6000])
