@@ -76,7 +76,7 @@
   </div>
   <div id="status">Loading Cassini layer…</div>
   <details>
-    <summary>Places &amp; map options · v19</summary>
+    <summary>Places &amp; map options · v20</summary>
     <div class="row">
       <button data-ll="50.3422,1.9978">Caumont</button>
       <button data-ll="50.335,2.0492">Le Quesnoy-en-Artois</button>
@@ -89,7 +89,7 @@
     <div class="row"><label><input type="checkbox" id="cad"> Cadastre (plot boundaries)</label></div>
     <div id="legend"></div>
     <small>Missing a site? Long-press the map at its location to add it yourself.</small>
-    <div class="row"><button id="update">Update app</button><small id="ver">Version 19</small></div>
+    <div class="row"><button id="update">Update app</button><small id="ver">Version 20</small></div>
     <div class="row" id="keyrow">
       <input id="gkey" placeholder="Google Maps API key (optional)">
       <button id="gload">Use</button>
@@ -524,37 +524,52 @@ function addSite(el) {
       (link ? '<br><a href="' + link + '" target="_blank" rel="noopener">More information</a>' : '') + '</div>')
     .addTo(sitesLayer);
 }
-async function loadSites() {
-  if (!sitesOn || sitesBusy) return;
+let sitesPending = false;
+function aroundView(minKm) {                     // the screen plus a margin, never less than minKm across
+  const b = map.getBounds().pad(.3), c = b.getCenter(), dLat = minKm / 2 / 111, dLng = dLat / Math.cos(c.lat * Math.PI / 180);
+  return L.latLngBounds([Math.min(b.getSouth(), c.lat - dLat), Math.min(b.getWest(), c.lng - dLng)],
+                        [Math.max(b.getNorth(), c.lat + dLat), Math.max(b.getEast(), c.lng + dLng)]);
+}
+function loadSites() {
+  if (!sitesOn) return;
+  if (sitesBusy) { sitesPending = true; return; }   // the map moved while loading: load the new place right after
   if (map.getZoom() < SITE_MIN_ZOOM) { $('status').textContent = 'Zoom in to load historic sites.'; return; }
-  const b = map.getBounds();
-  if (sitesLoaded && sitesLoaded.contains(b)) return;
-  const q = b.pad(.3), box = [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(4)).join(',');
+  if (sitesLoaded && sitesLoaded.contains(map.getBounds())) return;
+  const q = aroundView(12), box = [q.getSouth(), q.getWest(), q.getNorth(), q.getEast()].map(n => n.toFixed(4)).join(',');
   const query = '[out:json][timeout:25];(' +
     'nwr["historic"~"^(castle|manor|castle_wall|battlefield|archaeological_site|earthworks|fort|fortification|bunker|ruins|tower|city_gate|citywalls|monastery)$"](' + box + ');' +
     'nwr["military"~"^(bunker|trench)$"](' + box + ');' +
     'nwr["abandoned:military"](' + box + ');' +
     ');out center tags 600;';
   sitesBusy = true; $('status').textContent = 'Loading historic sites…';
-  const [places, battles, wiki, heritage] = await Promise.all([fetchPlaces(query), fetchBattles(q), fetchWiki(),
-                                                               curReg === 'ee' ? fetchHeritageEE(q) : Promise.resolve([])]);
-  sitesBusy = false;
-  (heritage || []).forEach(addHeritageEE);
-  if (!places && !battles && !wiki) { $('status').textContent = 'Historic sites could not be loaded – check the connection and try again.'; return; }
-  (places || []).forEach(addSite);
-  (battles || []).forEach(addBattle);
-  (wiki || []).forEach(addWiki);              // last, so it only fills gaps left by the other two
-  if (places && battles && wiki) sitesLoaded = map.getBounds();        // retry next time if one source failed
-  const n = sitesLayer.getLayers().length;
-  $('status').textContent = n + ' known historic site(s) loaded – tap a dot for details.' +
-    (!places ? ' (OpenStreetMap source failed.)' : '') + (!battles ? ' (Wikidata source failed.)' : '') + (!wiki ? ' (Wikipedia source failed.)' : '') + (!heritage ? ' (Estonian heritage register failed.)' : '') +
-    ((places || []).length >= 600 ? ' Zoom in to see them all.' : '');
+  const failed = []; let left = 0;
+  const note = () => {
+    $('status').textContent = sitesLayer.getLayers().length + ' known historic site(s) loaded' + (left ? ' – more coming…' : ' – tap a dot for details.') +
+      (failed.length ? ' (No answer from: ' + failed.join(', ') + '.)' : '');
+  };
+  const run = (label, promise, add) => {           // each source shows its dots as soon as it answers
+    left++;
+    promise.then(r => { if (r) r.forEach(add); else failed.push(label); }).catch(() => failed.push(label)).then(() => {
+      left--; note();
+      if (left) return;
+      sitesBusy = false;
+      if (!failed.length) sitesLoaded = q;
+      if (sitesPending) { sitesPending = false; loadSites(); }
+    });
+  };
+  const placesP = fetchPlaces(query);
+  if (curReg === 'ee') run('Estonian heritage register', fetchHeritageEE(q), addHeritageEE);
+  run('OpenStreetMap', placesP, addSite);
+  run('Wikidata', fetchBattles(q), addBattle);
+  // Wikipedia goes last so it only fills gaps, but does not wait more than 6 s for OpenStreetMap
+  run('Wikipedia', Promise.race([placesP, new Promise(ok => setTimeout(ok, 6000))]).then(() => fetchWiki()), addWiki);
 }
 async function fetchPlaces(query) {              // OpenStreetMap: castles, manors, forts, bunkers, trenches, ruins…
   for (const host of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter']) {
     try {
       const r = await fetch(host, { method: 'POST', body: 'data=' + encodeURIComponent(query),
-                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+                                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                                    signal: window.AbortSignal && AbortSignal.timeout ? AbortSignal.timeout(20000) : undefined });
       if (!r.ok) continue;
       const d = await r.json();
       if (Array.isArray(d.elements)) return d.elements;
@@ -733,7 +748,14 @@ function addClue(f) {
     .bindPopup('<div class="pop"><b>' + esc(name) + '</b><br>' + esc(rule.why) + '<br><small>A name is only a hint, not proof of a site.</small></div>')
     .addTo(cluesLayer);
 }
+let cluesPending = false;
 async function loadClues() {
+  if (!cluesOn) return;
+  if (cluesBusy) { cluesPending = true; return; }
+  await loadCluesNow();
+  if (cluesPending) { cluesPending = false; loadClues(); }
+}
+async function loadCluesNow() {
   if (!cluesOn || cluesBusy) return;
   if (map.getZoom() < 12) { $('status').textContent = 'Zoom in to load place-name clues.'; return; }
   const b = map.getBounds();
