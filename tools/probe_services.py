@@ -207,6 +207,28 @@ def main():
     except Exception as e:  # noqa
         line("   not JSON: %s" % e)
 
+    line()
+    line("# Round 4: French heritage register (Monuments historiques, data.culture.gouv.fr)")
+    api = "https://data.culture.gouv.fr/api/explore/v2.1/catalog/datasets"
+    st, h, b = head("culture catalog search", api + "?limit=30&select=dataset_id,records_count&where=" + urllib.parse.quote('search("monuments historiques") or search("merimee") or search("archeologi")'))
+    try:
+        line("   datasets: " + " ; ".join("%s (%s)" % (r.get("dataset_id"), r.get("records_count")) for r in json.loads(b).get("results", [])))
+    except Exception as e:  # noqa
+        line("   not JSON: %s" % e)
+    ds = "liste-des-immeubles-proteges-au-titre-des-monuments-historiques"
+    st, h, b = head("MH dataset meta", api + "/" + ds)
+    try:
+        d = json.loads(b)
+        line("   fields: " + " ; ".join("%s[%s]" % (f.get("name"), f.get("type")) for f in d.get("fields", [])))
+    except Exception as e:  # noqa
+        line("   not JSON: %s" % e)
+    st, h, b = head("MH records sample", api + "/" + ds + "/records?limit=2")
+    try:
+        for r in json.loads(b).get("results", [])[:2]:
+            line("   " + json.dumps(r, ensure_ascii=False)[:1800])
+    except Exception as e:  # noqa
+        line("   not JSON: %s" % e)
+
     os.makedirs("diag", exist_ok=True)
     with open("diag/probe.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(OUT) + "\n")
