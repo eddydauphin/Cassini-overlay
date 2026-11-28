@@ -229,6 +229,27 @@ def main():
     except Exception as e:  # noqa
         line("   not JSON: %s" % e)
 
+    line()
+    line("# Round 5: French monuments dataset on data.gouv.fr")
+    for u in ("https://www.data.gouv.fr/api/1/datasets/immeubles-proteges-au-titre-des-monuments-historiques-2/",
+              "https://www.data.gouv.fr/api/2/datasets/immeubles-proteges-au-titre-des-monuments-historiques-2/resources/?page_size=20"):
+        st, h, b = head("datagouv " + u[28:40], u)
+        try:
+            d = json.loads(b)
+            rs = d.get("resources") if isinstance(d.get("resources"), list) else d.get("data", [])
+            line("   keys: %s" % sorted(d.keys())[:40])
+            for r in rs or []:
+                line("   resource: %s | %s | %s | size %s | url %s | latest %s" % (r.get("title"), r.get("format"), r.get("mime"), r.get("filesize"), r.get("url"), r.get("latest")))
+                if r.get("url") and re.search(r"geojson|csv", str(r.get("format")) + str(r.get("title")), re.I):
+                    req = urllib.request.Request(r["url"], headers={"User-Agent": "cassini-overlay probe", "Range": "bytes=0-4000"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=120) as rr:
+                            line("     -> HTTP %s final %s | %s" % (rr.status, rr.geturl(), rr.read(3500).decode("utf-8", "replace").replace("\n", " ")[:3200]))
+                    except Exception as e:  # noqa
+                        line("     -> error %s" % e)
+        except Exception as e:  # noqa
+            line("   not JSON: %s" % e)
+
     os.makedirs("diag", exist_ok=True)
     with open("diag/probe.txt", "w", encoding="utf-8") as f:
         f.write("\n".join(OUT) + "\n")
